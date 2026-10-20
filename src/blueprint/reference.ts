@@ -60,6 +60,7 @@ automod:
 Rules:
 - Re-applying the same blueprint changes nothing. Resources not in the blueprint are left alone unless a plan sets prune.
 - Fields you omit are not managed. A role without "permissions" keeps whatever it has.
+- Discord hides channels the bot lacks View Channel on. A managed channel the bot cannot see is never re-created or pruned; its steps are blocked until the bot's role gets View Channel there.
 - Workflow: validate_blueprint -> plan_blueprint -> review -> apply_plan -> verify_blueprint.
 - export_blueprint produces a starting point from a live server.
 `.trim();

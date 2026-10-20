@@ -268,7 +268,7 @@ those steps with the reason.
 
 | Feature | Permissions |
 | --- | --- |
-| Inspect, plan, verify | View Channel (Manage Server to read AutoMod) |
+| Inspect, plan, verify | View Channel, in every channel steward manages (Manage Server to read AutoMod) |
 | Channels and categories | Manage Channels |
 | Roles, overwrites, role panels, join roles | Manage Roles, plus every permission it should be able to grant: Discord only lets a bot allow or deny permissions it holds |
 | Server settings, AutoMod | Manage Server |
@@ -278,6 +278,24 @@ those steps with the reason.
 
 `generate_invite_link` builds an install URL with these (`recommended`) or
 Administrator.
+
+**Channels the bot cannot see.** From 16 November 2026 Discord leaves every
+channel the bot lacks View Channel on out of the channel list it gives the bot
+(`GET /guilds/{id}/channels`). Administrator sees every channel; without it, a
+private channel the bot is not let into is invisible to it. steward never takes
+a managed channel that is missing from the list for deleted: it asks Discord for
+that channel by ID, and a 403 means it still exists. The plan then blocks every
+step that needs the channel (the channel itself, messages and panels in it, new
+channels inside it, settings and AutoMod rules that change to point at it, and
+pruning it) and says why, and it never creates a replacement. Only a 404 counts
+as deleted. `verify_blueprint` reports such a channel as not in sync. The fix is
+to allow View Channel for the bot's role in that channel (and Read Message
+History where steward has posted). Private channels steward creates already
+keep that access for the bot, so this happens when someone takes the access
+away. A channel steward has never managed and cannot see is invisible to it
+entirely: it is not exported, cannot be adopted by name, does not trigger the
+name-collision warning and is never pruned. Plans warn when the bot lacks View
+Channel server-wide.
 
 ## What steward cannot do
 

@@ -35,8 +35,10 @@ npm run dev              # tsx, restarts on change, reads .env
 
 - an in-memory Discord (`test/helpers/memory-adapter.ts`) that enforces
   permissions, role hierarchy, managed roles, Community requirements, position
-  shuffling and nonce de-duplication, and can inject timeouts (before or after
-  the change is applied), 5xx errors, 403s, 404s and hangs;
+  shuffling and nonce de-duplication, leaves channels the bot cannot view out
+  of the channel list (as Discord does from 2026-11-16), and can inject
+  timeouts (before or after the change is applied), 5xx errors, 403s, 404s and
+  hangs;
 - the real HTTP server and a real MCP client (`@modelcontextprotocol/client`)
   for authentication, Host/Origin checks, scopes, guild restrictions and the
   end-to-end blueprint workflow;

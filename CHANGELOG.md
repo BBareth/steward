@@ -48,6 +48,17 @@ First version. Not yet released or published as an image.
   `admin`, `moderator` and `bot` are exempt; `steward_status` reports whether
   it is active.
 
+- Ready for Discord's channel visibility change of 16 November 2026, after
+  which the guild channel list omits channels the bot cannot view. A mapped
+  channel missing from the list is read by ID: a 403 means it still exists,
+  so it is never re-created or pruned, its mapping is kept, and every step
+  that needs it is blocked with the fix (allow View Channel for the bot's
+  role there). Messages Discord refuses to show block their steps instead of
+  failing the plan. Recovering a timed-out create finds a new channel the bot
+  cannot view through the audit log instead of creating it again. Plans warn
+  when the bot lacks View Channel server-wide; export notes managed channels
+  it could not see.
+
 ### Fixed
 - Role ordering with tied positions. Discord lets roles share a position and
   breaks ties by id; the planner saw a difference that the executor could not

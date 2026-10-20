@@ -2,6 +2,7 @@ import type {
   AutoModRuleInfo,
   AutoModWriteBody,
   ChannelInfo,
+  ChannelLookup,
   ChannelWriteBody,
   ConnectionStatus,
   GuildInfo,
@@ -77,7 +78,10 @@ export interface DiscordAdapter {
   start(events: AdapterEvents): Promise<void>;
   stop(): Promise<void>;
 
+  /** From 2026-11-16 its channel list leaves out channels the bot cannot view. */
   fetchSnapshot(guildId: string): Promise<GuildSnapshot>;
+  /** One channel by id: tells a channel the bot cannot view (403) from a deleted one (404). */
+  fetchChannel(channelId: string): Promise<ChannelLookup>;
   fetchMember(guildId: string, userId: string): Promise<MemberInfo | null>;
   fetchAutoModRules(guildId: string): Promise<AutoModRuleInfo[]>;
   /** One rule by id; null when Discord answers 404 for it. */

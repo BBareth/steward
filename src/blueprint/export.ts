@@ -22,9 +22,12 @@ import {
 
 export interface ExportInput {
   snapshot: GuildSnapshot;
+  /** Mapped channels that exist but the bot cannot view, so they are not in the snapshot. */
+  hiddenChannelIds: string[];
   mappings: Mapping[];
   automodRules: AutoModRuleInfo[] | null;
-  managedMessages: Array<ManagedMessage & { message: MessageInfo | null }>;
+  /** `unreadable`: Discord refused to show the message (403). */
+  managedMessages: Array<ManagedMessage & { message: MessageInfo | null; unreadable?: boolean }>;
   welcome: WelcomeConfig | undefined;
   selfRoles: string[];
   protectedRoles: string[];
@@ -179,6 +182,13 @@ export function exportBlueprint(input: ExportInput): ExportResult {
     notes.push(
       `${skipped.length} channel(s) of unsupported types were not exported: ${skipped.map((c) => c.name).join(', ')}`,
     );
+  const hidden = input.mappings.filter(
+    (m) => m.kind === 'channel' && input.hiddenChannelIds.includes(m.discordId),
+  );
+  if (hidden.length > 0)
+    notes.push(
+      `${hidden.length} channel(s) steward manages were not exported because the bot cannot view them (Discord does not list them): ${hidden.map((m) => `"${m.key}" (${m.discordId})`).join(', ')}. Give the bot View Channel there and export again`,
+    );
 
   // Channel keys must exist before anything refers to them.
   const chRef = (id: string | null) => (id ? (keys.existing('channel', id) ?? id) : null);
@@ -304,10 +314,15 @@ export function exportBlueprint(input: ExportInput): ExportResult {
       ...(m.message!.content ? { content: m.message!.content } : {}),
       ...(m.message!.embeds.length ? { embeds: m.message!.embeds.map(embedOut) } : {}),
     }));
-  const missing = input.managedMessages.filter((m) => !m.message);
+  const missing = input.managedMessages.filter((m) => !m.message && !m.unreadable);
   if (missing.length > 0)
     notes.push(
       `managed message(s) no longer on Discord were left out: ${missing.map((m) => m.key).join(', ')}`,
+    );
+  const unreadable = input.managedMessages.filter((m) => m.unreadable);
+  if (unreadable.length > 0)
+    notes.push(
+      `managed message(s) the bot cannot read were left out: ${unreadable.map((m) => m.key).join(', ')}. Give the bot View Channel and Read Message History in their channels and export again`,
     );
   if (messages.length > 0) bp.messages = messages;
 

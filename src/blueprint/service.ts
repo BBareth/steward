@@ -6,7 +6,7 @@ import type { Logger } from '../logger.js';
 import { reconcileCreate } from '../ops/journal.js';
 import type { GuildLocks } from '../ops/locks.js';
 import type { ManagedMessage, MappingKind, PlanRecord, RolePanel, Store } from '../store.js';
-import { StewardError } from '../util/errors.js';
+import { DiscordRequestError, StewardError } from '../util/errors.js';
 import { newId, snowflakeTime } from '../util/ids.js';
 import type { ApplyResult } from './apply.js';
 import { PlanExecutor } from './apply.js';
@@ -27,9 +27,12 @@ export interface ServiceConfig {
 
 export interface GuildState {
   snapshot: GuildSnapshot;
+  /** Mapped channels that still exist but are not in the snapshot: the bot cannot view them. */
+  hiddenChannelIds: string[];
   automodRules: AutoModRuleInfo[] | null;
-  managedMessages: Array<ManagedMessage & { exists: boolean }>;
-  panels: Array<RolePanel & { messageExists: boolean }>;
+  /** `exists` is null when Discord refused to show the message (403). */
+  managedMessages: Array<ManagedMessage & { exists: boolean | null }>;
+  panels: Array<RolePanel & { messageExists: boolean | null }>;
 }
 
 interface ActiveRun {
@@ -57,20 +60,57 @@ export class BlueprintService {
   async gatherState(guildId: string, needAutomod: boolean): Promise<GuildState> {
     const { adapter, store } = this.deps;
     const snapshot = await adapter.fetchSnapshot(guildId);
+    const hiddenChannelIds = await this.findHiddenChannels(guildId, snapshot);
     const canReadAutomod = has(botStanding(snapshot).permissions, P.ManageGuild);
     const automodRules = needAutomod && canReadAutomod ? await adapter.fetchAutoModRules(guildId) : null;
     const managedMessages = await Promise.all(
       store
         .listManagedMessages(guildId)
-        .map(async (m) => ({ ...m, exists: !!(await adapter.fetchMessage(m.channelId, m.messageId)) })),
+        .map(async (m) => ({ ...m, exists: await this.messageExists(m.channelId, m.messageId) })),
     );
     const panels = await Promise.all(
       store.listPanels(guildId).map(async (p) => ({
         ...p,
-        messageExists: p.messageId ? !!(await adapter.fetchMessage(p.channelId, p.messageId)) : false,
+        messageExists: p.messageId ? await this.messageExists(p.channelId, p.messageId) : false,
       })),
     );
-    return { snapshot, automodRules, managedMessages, panels };
+    return { snapshot, hiddenChannelIds, automodRules, managedMessages, panels };
+  }
+
+  /**
+   * Discord's channel list leaves out channels the bot cannot view (from
+   * 2026-11-16), so a mapped channel missing from it may still exist. Ask
+   * Discord about each one: a 403 means it does. Treating them as deleted
+   * would create a second copy of every managed channel the bot lost sight of.
+   */
+  private async findHiddenChannels(guildId: string, snapshot: GuildSnapshot): Promise<string[]> {
+    const listed = new Set(snapshot.channels.map((c) => c.id));
+    const absent = new Set(
+      this.deps.store
+        .listMappings(guildId)
+        .filter((m) => m.kind === 'channel' && !listed.has(m.discordId))
+        .map((m) => m.discordId),
+    );
+    const lookups = await Promise.all(
+      [...absent].map(async (id) => ({ id, found: await this.deps.adapter.fetchChannel(id) })),
+    );
+    const hidden: string[] = [];
+    for (const { id, found } of lookups) {
+      if (found.status === 'hidden') hidden.push(id);
+      // Readable after all (it became visible between the two requests): plan with it.
+      else if (found.status === 'visible' && found.guildId === guildId) snapshot.channels.push(found.channel);
+    }
+    return hidden;
+  }
+
+  /** null when Discord refuses to show it (403): the bot cannot view or read that channel. */
+  private async messageExists(channelId: string, messageId: string): Promise<boolean | null> {
+    try {
+      return !!(await this.deps.adapter.fetchMessage(channelId, messageId));
+    } catch (error) {
+      if (error instanceof DiscordRequestError && error.status === 403) return null;
+      throw error;
+    }
   }
 
   private localState(guildId: string, state: GuildState) {
@@ -225,6 +265,7 @@ export class BlueprintService {
       blueprint: bp,
       blueprintHash: v.hash!,
       snapshot: state.snapshot,
+      hiddenChannelIds: state.hiddenChannelIds,
       mappings: store.listMappings(args.guildId),
       automodRules: state.automodRules ?? (bp.automod.length > 0 ? [] : null),
       managedMessages: state.managedMessages,
@@ -430,6 +471,7 @@ export class BlueprintService {
       blueprint: bp,
       blueprintHash: v.hash!,
       snapshot: state.snapshot,
+      hiddenChannelIds: state.hiddenChannelIds,
       mappings: this.deps.store.listMappings(guildId),
       automodRules: state.automodRules ?? (bp.automod.length > 0 ? [] : null),
       managedMessages: state.managedMessages,
@@ -453,12 +495,19 @@ export class BlueprintService {
     const { store, adapter } = this.deps;
     const state = await this.gatherState(args.guildId, true);
     const managedMessages = await Promise.all(
-      store
-        .listManagedMessages(args.guildId)
-        .map(async (m) => ({ ...m, message: await adapter.fetchMessage(m.channelId, m.messageId) })),
+      store.listManagedMessages(args.guildId).map(async (m) => {
+        try {
+          return { ...m, message: await adapter.fetchMessage(m.channelId, m.messageId) };
+        } catch (error) {
+          if (error instanceof DiscordRequestError && error.status === 403)
+            return { ...m, message: null, unreadable: true };
+          throw error;
+        }
+      }),
     );
     const out = exportBlueprint({
       snapshot: state.snapshot,
+      hiddenChannelIds: state.hiddenChannelIds,
       mappings: store.listMappings(args.guildId),
       automodRules: state.automodRules,
       managedMessages,

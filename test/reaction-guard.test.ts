@@ -6,6 +6,7 @@ import type { ReactionAddEvent } from '../src/discord/adapter.js';
 import { DiscordJsAdapter, parseReactionAdd } from '../src/discord/discordjs-adapter.js';
 import { P } from '../src/discord/permissions.js';
 import type { MessageBody } from '../src/discord/types.js';
+import { DiscordRequestError } from '../src/util/errors.js';
 import { buildMessageBody } from '../src/features/messages.js';
 import { decideReaction, ReactionGuard, reactionEmojiSegment } from '../src/features/reaction-guard.js';
 import { handlePanelButton, panelCustomId } from '../src/features/role-panels.js';
@@ -247,10 +248,17 @@ describe('the reaction guard', () => {
     expect(removals(e)).toEqual([]);
   });
 
-  test('inactive (read-only) and other guilds never remove anything', async () => {
+  test('inactive (read-only) never removes anything', async () => {
     const { e, guard, channel } = guarded({ active: false });
     const msg = await stewardMessage(e, channel.id);
     await e.adapter.emitReactionAdd(msg.id, e.adapter.addMember().userId, THUMBS);
+    expect(removals(e)).toEqual([]);
+    expect(guard.stats.kept).toBe(1);
+  });
+
+  test('an active guard leaves guilds outside DISCORD_GUILD_IDS alone', async () => {
+    const { e, guard, channel } = guarded();
+    const msg = await stewardMessage(e, channel.id);
     await guard.handle({
       guildId: '100000000000000077',
       channelId: channel.id,
@@ -264,7 +272,51 @@ describe('the reaction guard', () => {
       botUserId: e.adapter.botUserId,
     });
     expect(removals(e)).toEqual([]);
-    expect(guard.stats.kept).toBe(2);
+    expect(guard.stats.kept).toBe(1);
+  });
+
+  test('a two-factor refusal pauses the whole server, not just one channel', async () => {
+    const { e, guard, channel } = guarded();
+    const other = e.adapter.addChannel({ name: 'news' });
+    const first = await stewardMessage(e, channel.id);
+    const second = await stewardMessage(e, other.id);
+    const remove = vi
+      .spyOn(e.adapter, 'removeUserReaction')
+      .mockRejectedValue(
+        new DiscordRequestError('http', 'Discord rejected the request: Two factor is required', 403, 60003),
+      );
+    await e.adapter.emitReactionAdd(first.id, e.adapter.addMember().userId, THUMBS);
+    await e.adapter.emitReactionAdd(second.id, e.adapter.addMember().userId, THUMBS);
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(guard.report(null)).toMatchObject({ failed: 1, paused_guilds: [e.guildId], paused_channels: [] });
+  });
+
+  test('a passing failure to read the author is tried again on the next reaction', async () => {
+    const { e, guard, channel } = guarded();
+    const msg = await stewardMessage(e, channel.id);
+    e.adapter.inject('fetchMessage', 'timeout_before');
+    await e.adapter.emitReactionAdd(msg.id, e.adapter.addMember().userId, THUMBS, { messageAuthorId: null });
+    const member = e.adapter.addMember();
+    await e.adapter.emitReactionAdd(msg.id, member.userId, THUMBS, { messageAuthorId: null });
+    expect(e.adapter.calls.filter((c) => c.method === 'fetchMessage')).toHaveLength(2);
+    expect(removals(e).map((c) => c.args[3])).toEqual([member.userId]);
+    expect(guard.stats).toMatchObject({ kept: 1, removed: 1 });
+  });
+
+  test('status figures are limited to the guilds a credential may see', async () => {
+    const { e, guard, channel } = guarded();
+    const msg = await stewardMessage(e, channel.id);
+    e.adapter.setBotPermissions(P.ViewChannel | P.SendMessages | P.ReadMessageHistory);
+    await e.adapter.emitReactionAdd(msg.id, e.adapter.addMember().userId, THUMBS);
+    expect(guard.report([e.guildId])).toMatchObject({ failed: 1, paused_channels: [channel.id] });
+    expect(guard.report(['100000000000000077'])).toMatchObject({
+      removed: 0,
+      kept: 0,
+      failed: 0,
+      last_error: null,
+      paused_channels: [],
+      paused_guilds: [],
+    });
   });
 
   test('a channel where Discord refuses removals is left alone for a while', async () => {
@@ -356,11 +408,13 @@ class FakeClient extends EventEmitter {
     super();
   }
   async login() {
-    this.emit('clientReady', this);
+    if (!fakeHoldReady) this.emit('clientReady', this);
     return 'ok';
   }
   async destroy() {}
 }
+
+let fakeHoldReady = false;
 
 async function realAdapter(reactionIntent: boolean) {
   env = makeEnv();
@@ -383,7 +437,8 @@ async function realAdapter(reactionIntent: boolean) {
     backoffMs: 0,
   });
   await adapter.start({ reactionAdd: (e) => guard.handle(e) });
-  await vi.waitFor(() => expect(adapter.status().state).toBe('ready'));
+  if (fakeHoldReady) await vi.waitFor(() => expect(client).toBeDefined());
+  else await vi.waitFor(() => expect(adapter.status().state).toBe('ready'));
   return { adapter, guard, client: client! };
 }
 
@@ -450,6 +505,19 @@ describe('gateway to REST', () => {
     client.emit('raw', packet({ user_id: OWNER, member: { roles: [], user: { id: OWNER } } }), 0);
     await vi.waitFor(() => expect(guard.stats.kept).toBe(2));
     expect(client.routes).toEqual([]);
+  });
+
+  test('reactions before the session is ready are kept, with no request or journal row', async () => {
+    fakeHoldReady = true;
+    try {
+      const { client, guard } = await realAdapter(true);
+      client.emit('raw', packet(), 0);
+      await vi.waitFor(() => expect(guard.stats.kept).toBe(1));
+      expect(client.routes).toEqual([]);
+      expect(env!.store.listOperations({ tool: 'reaction_guard', limit: 10, offset: 0 }).total).toBe(0);
+    } finally {
+      fakeHoldReady = false;
+    }
   });
 
   test('without the intent, raw reactions are not listened to', async () => {

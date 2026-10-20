@@ -103,18 +103,33 @@ export interface ReactionGuardStats {
   last_error: string | null;
 }
 
+export interface ReactionGuardReport extends ReactionGuardStats {
+  /** Channels where removals are paused after Discord refused one. */
+  paused_channels: string[];
+  /** Servers where removals are paused (Discord wants two-factor authentication on the bot owner). */
+  paused_guilds: string[];
+}
+
+interface GuildStats extends ReactionGuardStats {
+  last_error_at: number;
+}
+
+const emptyStats = (): GuildStats => ({
+  removed: 0,
+  kept: 0,
+  failed: 0,
+  dropped: 0,
+  last_removed_at: null,
+  last_error: null,
+  last_error_at: 0,
+});
+
 export class ReactionGuard {
-  readonly stats: ReactionGuardStats = {
-    removed: 0,
-    kept: 0,
-    failed: 0,
-    dropped: 0,
-    last_removed_at: null,
-    last_error: null,
-  };
+  private readonly perGuild = new Map<string, GuildStats>();
   private readonly pending = new Set<string>();
   private readonly authors = new Map<string, string | null>();
-  private readonly paused = new Map<string, number>();
+  /** `channel:<id>` or `guild:<id>` → when removals may resume. */
+  private readonly paused = new Map<string, { guildId: string; until: number }>();
 
   constructor(private readonly deps: ReactionGuardDeps) {}
 
@@ -122,9 +137,55 @@ export class ReactionGuard {
     return this.deps.active;
   }
 
-  /** Channels where removals are paused after Discord refused one. */
+  /** Counts across every guild. */
+  get stats(): ReactionGuardStats {
+    const { paused_channels: _c, paused_guilds: _g, ...stats } = this.report(null);
+    return stats;
+  }
+
+  /** What the guard did in these guilds (null: all), for steward_status. */
+  report(guildIds: readonly string[] | null, now = Date.now()): ReactionGuardReport {
+    const out: ReactionGuardReport = {
+      removed: 0,
+      kept: 0,
+      failed: 0,
+      dropped: 0,
+      last_removed_at: null,
+      last_error: null,
+      paused_channels: [],
+      paused_guilds: [],
+    };
+    let errorAt = 0;
+    for (const [guildId, s] of this.perGuild) {
+      if (guildIds && !guildIds.includes(guildId)) continue;
+      out.removed += s.removed;
+      out.kept += s.kept;
+      out.failed += s.failed;
+      out.dropped += s.dropped;
+      if (s.last_removed_at && (!out.last_removed_at || s.last_removed_at > out.last_removed_at))
+        out.last_removed_at = s.last_removed_at;
+      if (s.last_error && s.last_error_at > errorAt) {
+        out.last_error = s.last_error;
+        errorAt = s.last_error_at;
+      }
+    }
+    for (const [key, p] of this.paused) {
+      if (p.until <= now || (guildIds && !guildIds.includes(p.guildId))) continue;
+      const [kind, id] = key.split(':') as [string, string];
+      (kind === 'guild' ? out.paused_guilds : out.paused_channels).push(id);
+    }
+    return out;
+  }
+
+  /** Channels where removals are paused after Discord refused one, in any guild. */
   pausedChannels(now = Date.now()): string[] {
-    return [...this.paused].filter(([, until]) => until > now).map(([id]) => id);
+    return this.report(null, now).paused_channels;
+  }
+
+  private statsFor(guildId: string): GuildStats {
+    let s = this.perGuild.get(guildId);
+    if (!s) this.perGuild.set(guildId, (s = emptyStats()));
+    return s;
   }
 
   async handle(event: ReactionAddEvent): Promise<void> {
@@ -151,7 +212,7 @@ export class ReactionGuard {
       decision = decideReaction(event, facts);
     }
     if (!decision.remove) {
-      this.stats.kept++;
+      this.statsFor(event.guildId).kept++;
       this.deps.logger.debug('reaction kept', {
         guildId: event.guildId,
         messageId: event.messageId,
@@ -172,14 +233,19 @@ export class ReactionGuard {
     );
   }
 
-  /** The message's author when the event left it out; cached, and null when it cannot be read. */
+  /**
+   * The message's author when the event left it out, or null when it cannot
+   * be read. Only definite answers are cached, so a passing failure is tried
+   * again on the next reaction.
+   */
   private async authorOf(event: ReactionAddEvent): Promise<string | null> {
     if (this.authors.has(event.messageId)) return this.authors.get(event.messageId)!;
-    let author: string | null = null;
+    let author: string | null;
     try {
       author = (await this.deps.adapter.fetchMessage(event.channelId, event.messageId))?.authorId ?? null;
     } catch (error) {
       this.deps.logger.debug('could not read the reacted message', { error: safeErrorMessage(error) });
+      return null;
     }
     this.authors.set(event.messageId, author);
     if (this.authors.size > AUTHOR_CACHE) this.authors.delete(this.authors.keys().next().value!);
@@ -197,18 +263,32 @@ export class ReactionGuard {
     }
   }
 
+  private isPaused(event: ReactionAddEvent, now = Date.now()): boolean {
+    for (const key of [`guild:${event.guildId}`, `channel:${event.channelId}`]) {
+      const p = this.paused.get(key);
+      if (!p) continue;
+      if (p.until > now) return true;
+      this.paused.delete(key);
+    }
+    return false;
+  }
+
   private async remove(event: ReactionAddEvent, emoji: string): Promise<void> {
+    const stats = this.statsFor(event.guildId);
     const key = `${event.channelId}:${event.messageId}:${event.userId}:${emoji}`;
     // Replayed gateway events and double reactions come through here twice.
     if (this.pending.has(key)) return;
-    if ((this.paused.get(event.channelId) ?? 0) > Date.now()) {
-      this.stats.kept++;
+    if (this.isPaused(event)) {
+      stats.kept++;
       return;
     }
     if (this.pending.size >= MAX_PENDING) {
-      this.stats.dropped++;
-      if (this.stats.dropped % 100 === 1)
-        this.deps.logger.warn('reaction guard is behind; dropping removals', { dropped: this.stats.dropped });
+      stats.dropped++;
+      if (stats.dropped % 100 === 1)
+        this.deps.logger.warn('reaction guard is behind; dropping removals', {
+          guildId: event.guildId,
+          dropped: stats.dropped,
+        });
       return;
     }
     this.pending.add(key);
@@ -236,8 +316,8 @@ export class ReactionGuard {
             this.deps.adapter.removeUserReaction(event.channelId, event.messageId, emoji, event.userId),
         },
       );
-      this.stats.removed++;
-      this.stats.last_removed_at = new Date().toISOString();
+      stats.removed++;
+      stats.last_removed_at = new Date().toISOString();
     } catch (error) {
       this.failed(event, error);
     } finally {
@@ -246,29 +326,33 @@ export class ReactionGuard {
   }
 
   private failed(event: ReactionAddEvent, error: unknown): void {
-    this.stats.failed++;
-    this.stats.last_error = safeErrorMessage(error);
+    const stats = this.statsFor(event.guildId);
+    stats.failed++;
+    stats.last_error = safeErrorMessage(error);
+    stats.last_error_at = Date.now();
     const e = error instanceof OperationError ? error.underlying : error;
     const where = { guildId: event.guildId, channelId: event.channelId, messageId: event.messageId };
-    if (e instanceof DiscordRequestError && e.code === 60003) {
+    if (e instanceof DiscordRequestError && e.status === 403) {
+      // Repeated 403s count towards Discord's invalid-request limit, so stop
+      // trying for a while instead of sending (and logging) each one. A
+      // two-factor refusal applies to the whole server.
+      const twoFactor = e.code === 60003;
+      this.paused.set(twoFactor ? `guild:${event.guildId}` : `channel:${event.channelId}`, {
+        guildId: event.guildId,
+        until: Date.now() + PAUSE_MS,
+      });
       this.deps.logger.warn(
-        'reaction guard: Discord requires two-factor authentication on the bot owner account',
+        twoFactor
+          ? "reaction guard paused in this server for 10 minutes: Discord requires two-factor authentication on the bot owner's account for Manage Messages here"
+          : 'reaction guard paused in a channel for 10 minutes: Discord refused the removal (the bot needs Manage Messages there)',
         where,
       );
     } else if (e instanceof DiscordRequestError && e.code === 50083) {
       this.deps.logger.info('reaction guard: the thread is archived, leaving the reaction', where);
-    } else if (e instanceof DiscordRequestError && e.status === 403) {
-      // Repeated 403s count towards Discord's invalid-request limit, so stop
-      // trying in this channel for a while instead of logging each one.
-      this.paused.set(event.channelId, Date.now() + PAUSE_MS);
-      this.deps.logger.warn(
-        'reaction guard paused in a channel for 10 minutes: Discord refused the removal (the bot needs Manage Messages there)',
-        where,
-      );
     } else {
       this.deps.logger.warn('reaction guard could not remove a reaction', {
         ...where,
-        error: this.stats.last_error,
+        error: stats.last_error,
       });
     }
   }

@@ -49,11 +49,12 @@ export function channelOrderHolds(
   group: 'category' | 'text' | 'voice',
   desiredIds: string[],
 ): boolean {
-  const present = desiredIds.filter((id) => snapshot.channels.some((c) => c.id === id));
-  const actual = bucketMembers(snapshot, parentId, group)
-    .map((c) => c.id)
-    .filter((id) => present.includes(id));
-  return actual.length === present.length && actual.every((id, i) => id === present[i]);
+  // Only channels in this bucket can be ordered here; one of another type is
+  // the planner's to report, not a failed reorder.
+  const bucket = bucketMembers(snapshot, parentId, group).map((c) => c.id);
+  const present = desiredIds.filter((id) => bucket.includes(id));
+  const actual = bucket.filter((id) => present.includes(id));
+  return actual.every((id, i) => id === present[i]);
 }
 
 /** Position updates that put `desiredIds` in order within one sorting bucket. Empty if already in order. */
@@ -101,7 +102,7 @@ export interface RoleOrderPlan {
 export function roleOrderPlan(snapshot: GuildSnapshot, desiredIds: string[]): RoleOrderPlan {
   const top = botStanding(snapshot).highestRole;
   const byId = new Map(snapshot.roles.map((r) => [r.id, r]));
-  const wanted = desiredIds.filter((id) => byId.has(id));
+  const wanted = [...new Set(desiredIds)].filter((id) => byId.has(id));
   const all = rolesTopDown(snapshot).filter((r) => r.id !== snapshot.guild.id);
   const currentOrder = all.map((r) => r.id).filter((id) => wanted.includes(id));
   const inOrder = currentOrder.every((id, i) => id === wanted[i]);
@@ -148,7 +149,12 @@ export function roleOrderPlan(snapshot: GuildSnapshot, desiredIds: string[]): Ro
         const tieWorks = BigInt(target[i]!) < BigInt(target[i + 1]!);
         assigned[i] = tieWorks ? assigned[i + 1]! : assigned[i + 1]! + 1;
       }
-      if (assigned[0]! > room) {
+      // A role already sitting on the bot's own number (a newer id ranks it
+      // below the bot) keeps it and is not sent; anything else needs room.
+      const short = assigned.some(
+        (p, i) => p > room && !(p === top.position && byId.get(target[i]!)!.position === p),
+      );
+      if (short) {
         const tied = positions.filter((p) => positions.filter((q) => q === p).length > 1).length;
         return result(
           `the order needs ${assigned[0]} distinct positions below the bot's highest role "${top.name}", but it is at position ${top.position}, which leaves ${Math.max(room, 0)}` +

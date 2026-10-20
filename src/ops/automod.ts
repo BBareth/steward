@@ -202,17 +202,44 @@ export async function explainAutomodNotFound(
 }
 
 /**
- * Run a write against a listed rule. A 404 becomes the diagnosis above rather
- * than a bare failure; a delete is also never taken as done on a 404, and is
- * confirmed by listing the rules again.
+ * The DELETE for a rule. A 404 is taken as "already deleted" only when the
+ * rule is no longer listed (a retry after a lost response, or someone else
+ * deleting it); while Discord still lists it, the 404 stands, because Discord
+ * answers 404 for some rules it keeps itself.
  */
-export async function writeListedRule<T>(
+export async function deleteRuleRequest(
+  adapter: DiscordAdapter,
+  guildId: string,
+  ruleId: string,
+  reason: string,
+): Promise<void> {
+  try {
+    await adapter.deleteAutoModRule(guildId, ruleId, reason);
+  } catch (error) {
+    if (!(error instanceof DiscordRequestError && error.isNotFound)) throw error;
+    let listed = true;
+    try {
+      listed = (await adapter.fetchAutoModRules(guildId)).some((r) => r.id === ruleId);
+    } catch {
+      // Cannot tell; keep the 404.
+    }
+    if (listed) throw error;
+  }
+}
+
+/**
+ * Run a write against a listed rule. A 404 becomes the diagnosis above rather
+ * than a bare failure. A delete is also read back, since Discord can accept a
+ * delete for a rule it keeps; if the list cannot be read, the delete stands
+ * and the note says it was not confirmed.
+ */
+export async function writeListedRule<T extends { opId: string }>(
   adapter: DiscordAdapter,
   guildId: string,
   rule: AutoModRuleInfo,
   attempt: { verb: 'change' | 'delete'; fields?: string[] },
   send: () => Promise<T>,
-): Promise<T> {
+): Promise<{ out: T; note?: string }> {
   let out: T;
   try {
     out = await send();
@@ -225,18 +252,17 @@ export async function writeListedRule<T>(
       opId: (error as OperationError).opId,
     });
   }
-  if (attempt.verb === 'delete') await confirmAutomodDeleted(adapter, guildId, rule);
-  return out;
-}
-
-/** A delete Discord answered with success, but the rule is still listed. */
-async function confirmAutomodDeleted(
-  adapter: DiscordAdapter,
-  guildId: string,
-  rule: AutoModRuleInfo,
-): Promise<void> {
-  const still = (await adapter.fetchAutoModRules(guildId)).find((r) => r.id === rule.id);
-  if (!still) return;
+  if (attempt.verb !== 'delete') return { out };
+  let still: AutoModRuleInfo | undefined;
+  try {
+    still = (await adapter.fetchAutoModRules(guildId)).find((r) => r.id === rule.id);
+  } catch (error) {
+    return {
+      out,
+      note: `Discord accepted the delete; steward could not list the rules afterwards to confirm it (${safeErrorMessage(error)})`,
+    };
+  }
+  if (!still) return { out };
   throw new RefusedChange(
     `Discord answered the delete of ${describe(rule)} with success, but still lists the rule. Discord appears to keep this rule itself; steward did not recreate or change it. Disable it in the server's AutoMod settings in Discord instead, or leave it out of the prune`,
     {
@@ -246,5 +272,6 @@ async function confirmAutomodDeleted(
       creator_id: rule.creatorId,
       listed: true,
     },
+    out.opId,
   );
 }

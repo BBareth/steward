@@ -23,3 +23,12 @@ export const AFTER_COMMUNITY_KINDS: ReadonlySet<string> = new Set([
   'forum',
   'media',
 ]);
+
+/**
+ * Whether creating a channel of this kind waits for the settings step when a
+ * plan turns Community on. An announcement channel on a server that already
+ * has NEWS can be created straight away.
+ */
+export function waitsForCommunity(features: string[], kind: string): boolean {
+  return AFTER_COMMUNITY_KINDS.has(kind) && !(kind === 'announcement' && features.includes('NEWS'));
+}

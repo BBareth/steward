@@ -163,6 +163,55 @@ describe('role order with tied positions', () => {
   });
 });
 
+describe('found in review', () => {
+  test('a role sharing the bot position below it stays put instead of blocking the order', async () => {
+    const d = new MemoryDiscordAdapter({ botRolePosition: 3 });
+    // Ids ascend A < B < X, so no tie can stand in for a distinct position.
+    const a = d.addRole({ name: 'A', position: 2 });
+    const b = d.addRole({ name: 'B', position: 1 });
+    const x = d.addRole({ name: 'X', position: 3 }); // newer than the bot role, so below it
+    expect(order(d)).toEqual(['Steward', 'X', 'A', 'B']);
+    const plan = roleOrderPlan(await d.fetchSnapshot(d.guildId), [b.id, a.id]);
+    expect(plan.blocker).toBeNull();
+    expect(plan.updates.map((u) => u.id)).not.toContain(x.id);
+    for (const u of plan.updates) expect(u.position).toBeLessThan(3);
+    await d.setRolePositions(d.guildId, plan.updates, 'test');
+    expect(order(d)).toEqual(['Steward', 'X', 'B', 'A']);
+  });
+
+  test('a role listed twice is ordered once, and an order that already holds is left alone', async () => {
+    const d = new MemoryDiscordAdapter({ botRolePosition: 10 });
+    const a = d.addRole({ name: 'A', position: 5 });
+    const b = d.addRole({ name: 'B', position: 4 });
+    const plan = roleOrderPlan(await d.fetchSnapshot(d.guildId), [a.id, a.id, b.id]);
+    expect(plan).toMatchObject({ inOrder: true, updates: [], blocker: null });
+  });
+
+  test('a channel of another type in the list does not fail a reorder that worked', async () => {
+    env = makeEnv();
+    const b = env.adapter.addChannel({ name: 'b', position: 0 });
+    const a = env.adapter.addChannel({ name: 'a', position: 1 });
+    const v = env.adapter.addChannel({ name: 'v', type: 2, position: 0 });
+    for (const c of [a, b, v]) env.store.setMapping(env.guildId, 'channel', c.name, c.id, 'manual');
+    const bp = {
+      version: 1,
+      roles: [],
+      categories: [],
+      channels: [
+        { key: 'a', name: 'a' },
+        { key: 'b', name: 'b' },
+        { key: 'v', name: 'v' },
+      ],
+      messages: [],
+    };
+    const { body, result } = await planAndApply(env, bp);
+    expect(body.unsupported.map((u) => u.code)).toContain('type_change');
+    const step = result.steps.find((s) => s.action === 'reorder_channels')!;
+    expect(step.status).toBe('succeeded');
+    expect(env.adapter.channels.get(a.id)!.position).toBeLessThan(env.adapter.channels.get(b.id)!.position);
+  });
+});
+
 describe('when the order cannot be reached', () => {
   test('too little room under the bot is a concrete blocker at plan time, with no write', async () => {
     env = makeEnv({ botRolePosition: 2 });

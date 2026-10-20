@@ -245,7 +245,9 @@ export const blueprintTools = [
       continue_on_error: z
         .boolean()
         .default(false)
-        .describe('Keep going past a failed step (dependents are still skipped).'),
+        .describe(
+          'Keep going past a failed step (dependents are still skipped). Without it the run stops at a failure, except that a change Discord refuses on an AutoMod rule it keeps for itself fails only that step; later deletions are then skipped.',
+        ),
       accept_blocked: z
         .boolean()
         .default(false)

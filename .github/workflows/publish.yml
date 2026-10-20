@@ -1,7 +1,8 @@
 name: Publish image
 
 # Pushes to main publish an `edge` image; semver tags publish `X.Y.Z`, `X.Y`
-# and (for the newest tag) `latest`. Nothing is published until this runs.
+# and (for the newest release tag, never a pre-release) `latest`. Nothing is
+# published until this runs.
 on:
   push:
     branches: [main]
@@ -89,10 +90,11 @@ jobs:
       - name: Is this the newest release tag?
         id: newest
         run: |
-          # Re-running an older tag's publish must not drag `latest` backwards.
-          newest=$(git tag -l 'v*.*.*' --sort=-v:refname | head -n1)
-          echo "this run: ${GITHUB_REF_NAME}, newest tag: ${newest}"
-          if [ "${GITHUB_REF_NAME}" = "$newest" ]; then
+          # Re-running an older tag's publish must not drag `latest` backwards,
+          # and a pre-release (v1.2.0-rc.1) is never `latest`.
+          newest=$(git tag -l 'v*.*.*' | grep -v -- '-' | sort -V | tail -n1 || true)
+          echo "this run: ${GITHUB_REF_NAME}, newest release tag: ${newest}"
+          if [ -n "$newest" ] && [ "${GITHUB_REF_NAME}" = "$newest" ]; then
             echo "is_newest=true" >> "$GITHUB_OUTPUT"
           else
             echo "is_newest=false" >> "$GITHUB_OUTPUT"
@@ -116,6 +118,9 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ steps.image.outputs.name }}
+          # Only the explicit rule below may tag `latest`; the action's default
+          # would add it for every non-prerelease semver tag.
+          flavor: latest=false
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}

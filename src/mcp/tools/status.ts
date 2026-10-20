@@ -87,7 +87,8 @@ export const statusTools = [
           removes: "ordinary members' reactions on messages steward itself posted, in the configured guilds",
           keeps: `bots, the server owner, and members with a role bound to ${REACTION_GUARD_EXEMPT_KEYS.join(', ')}`,
           needs: 'Manage Messages in the channels steward posts in',
-          ...(guard?.active ? { ...guard.stats, paused_channels: guard.pausedChannels() } : {}),
+          // Only what happened in the guilds this credential may see.
+          ...(guard?.active ? guard.report(call.caller.guilds) : {}),
         },
         you: { client: call.caller.clientId, scopes: [...call.caller.scopes] },
         workflow:

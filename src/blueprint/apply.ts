@@ -3,7 +3,13 @@ import type { ChannelWriteBody, GuildSnapshot, GuildWriteBody } from '../discord
 import { assertSelfAssignable, buildPanelMessage } from '../features/role-panels.js';
 import { buildMessageBody, messageFingerprint } from '../features/messages.js';
 import type { Logger } from '../logger.js';
-import { automodPatch, automodRuleGone, automodWriteBody, writeListedRule } from '../ops/automod.js';
+import {
+  automodPatch,
+  automodRuleGone,
+  automodWriteBody,
+  deleteRuleRequest,
+  writeListedRule,
+} from '../ops/automod.js';
 import type { OpContext, OpOutcome } from '../ops/journal.js';
 import { OperationError, runOperation } from '../ops/journal.js';
 import { bucketMembers, channelOrderHolds, channelPositionUpdates, roleOrderPlan } from '../ops/ordering.js';
@@ -127,6 +133,7 @@ export class PlanExecutor {
   async run(): Promise<ApplyResult> {
     let halted = false;
     let interrupted = false;
+    let refusedStep: PlanStep | null = null;
     for (const step of this.plan.steps) {
       const r = this.byStep.get(step.id)!;
       if (interrupted || this.opts.shouldStop()) {
@@ -146,6 +153,15 @@ export class PlanExecutor {
       if (failedDep) {
         r.status = 'skipped';
         r.error = `depends on step ${failedDep.stepId}, which ${failedDep.status === 'not_started' ? 'did not run' : `ended as ${failedDep.status}`}`;
+        this.persist();
+        continue;
+      }
+      // Plans do not record every way a deletion can rely on an earlier change
+      // (an AutoMod rule still alerting to a channel being pruned, say), so
+      // after a refusal deletions wait unless continue_on_error was asked for.
+      if (refusedStep && step.destructive && !this.opts.continueOnError) {
+        r.status = 'skipped';
+        r.error = `not run: Discord refused step ${refusedStep.id} ("${refusedStep.summary}") earlier in this run, and deletions wait until a plan applies without refusals (or set continue_on_error)`;
         this.persist();
         continue;
       }
@@ -169,12 +185,14 @@ export class PlanExecutor {
           error: r.error,
         });
         // A change Discord definitely refused leaves nothing half-done, so the
-        // steps that do not depend on it still run.
+        // steps that do not depend on it still run; deletions are held back.
         const refused = error instanceof RefusedChange;
-        if (refused)
+        if (refused) {
+          refusedStep ??= step;
           this.result.notes.push(
-            `Discord refused "${step.summary}"; steps that do not depend on it still ran`,
+            `Discord refused "${step.summary}"; steps that do not depend on it still ran${this.opts.continueOnError ? '' : ', except deletions'}`,
           );
+        }
         if (!refused && (!this.opts.continueOnError || r.status === 'uncertain')) halted = true;
       }
       this.persist();
@@ -474,9 +492,12 @@ export class PlanExecutor {
             r.note = 'the rule already matches';
             return;
           }
-          this.track(
-            r,
-            await writeListedRule(adapter, g, live, { verb: 'change', fields: patch.fields }, () =>
+          const write = await writeListedRule(
+            adapter,
+            g,
+            live,
+            { verb: 'change', fields: patch.fields },
+            () =>
               runOperation(ctx, {
                 action: 'update_automod',
                 resourceKind: 'automod',
@@ -486,9 +507,8 @@ export class PlanExecutor {
                 idempotent: true,
                 run: (reason) => adapter.editAutoModRule(g, step.ruleId, patch.body, reason),
               }),
-            ),
-            step.ruleId,
           );
+          this.track(r, write.out, step.ruleId);
         }
         return;
       }
@@ -593,21 +613,19 @@ export class PlanExecutor {
           r.status = 'noop';
           r.note = 'the rule was already gone';
         } else {
-          this.track(
-            r,
-            await writeListedRule(adapter, g, rule, { verb: 'delete' }, () =>
-              runOperation(ctx, {
-                action: step.action,
-                resourceKind: 'automod',
-                resourceKey: step.key,
-                targetId: step.targetId,
-                summary: step.summary,
-                idempotent: true,
-                run: (reason) => adapter.deleteAutoModRule(g, step.targetId, reason),
-              }),
-            ),
-            step.targetId,
+          const write = await writeListedRule(adapter, g, rule, { verb: 'delete' }, () =>
+            runOperation(ctx, {
+              action: step.action,
+              resourceKind: 'automod',
+              resourceKey: step.key,
+              targetId: step.targetId,
+              summary: step.summary,
+              idempotent: true,
+              run: (reason) => deleteRuleRequest(adapter, g, step.targetId, reason),
+            }),
           );
+          this.track(r, write.out, step.targetId);
+          if (write.note) r.note = write.note;
         }
         store.deleteMappingById(g, 'automod', step.targetId);
         if (r.status === 'not_started') r.status = 'succeeded';
@@ -704,13 +722,27 @@ export class PlanExecutor {
       error.underlying instanceof DiscordRequestError &&
       error.underlying.kind === 'http';
     if (!kind || !refused) throw error;
+    let features: string[];
+    try {
+      features = (await this.snapshot()).guild.features;
+    } catch {
+      throw error; // Discord's own refusal is the better report.
+    }
+    // A server that already has the feature was refused for another reason.
+    const hasFeature =
+      features.includes('COMMUNITY') || (kind === 'announcement' && features.includes('NEWS'));
+    if (hasFeature && kind !== 'media') throw error;
     r.opIds.push(error.opId);
-    const features = (await this.snapshot()).guild.features;
     throw new StewardError(
       'discord_error',
-      `${error.message}. Discord may only allow ${kind} channels on servers with the Community feature` +
-        (kind === 'announcement' ? ' (or the older NEWS feature)' : '') +
-        (kind === 'media' ? ', and media channels are still in development and may need extra access' : '') +
+      `${error.message}. ` +
+        (hasFeature
+          ? 'Discord documents media channels as still in development; this server may need access Discord grants separately'
+          : `Discord may only allow ${kind} channels on servers with the Community feature` +
+            (kind === 'announcement' ? ' (or the older NEWS feature)' : '') +
+            (kind === 'media'
+              ? ', and media channels are still in development and may need extra access'
+              : '')) +
         `; this server has: ${features.length ? features.join(', ') : 'no features'}`,
       { opId: error.opId, features },
     );

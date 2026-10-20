@@ -290,8 +290,12 @@ copy the files over from a checkout or an archive instead, for example from
 your workstation:
 
 ```bash
-rsync -a --exclude .git --exclude node_modules --exclude dist --exclude .env \
-  --exclude discord_token.txt ./ host:/opt/steward/
+# src/ exactly, so files a release removed do not linger and break the build:
+rsync -a --delete src/ host:/opt/steward/src/
+# everything else, leaving the host's own files alone:
+rsync -a --exclude .git --exclude node_modules --exclude dist --exclude src \
+  --exclude .env --exclude discord_token.txt --exclude tokens.json \
+  --exclude docker-compose.override.yml ./ host:/opt/steward/
 ```
 
 then on the host:

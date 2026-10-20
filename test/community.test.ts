@@ -203,3 +203,64 @@ describe('servers that stay without Community', () => {
     expect(result.status).toBe('applied');
   });
 });
+
+describe('found in review', () => {
+  const forum = {
+    version: 1,
+    roles: [],
+    categories: [{ key: 'talk', name: 'Talk', channels: [{ key: 'room', name: 'room', type: 'forum' }] }],
+    messages: [],
+  };
+
+  test('a refusal on a server that already has Community is reported as Discord gave it', async () => {
+    env = makeEnv();
+    env.adapter.guild.features = ['COMMUNITY'];
+    env.adapter.inject('createChannel', 'forbidden', {
+      when: (args) => (args[1] as { type?: number }).type === 15,
+    });
+    const { result } = await planAndApply(env, forum);
+    const step = result.steps.find((s) => s.summary.includes('#room'))!;
+    expect(step.status).toBe('failed');
+    expect(step.error).toMatch(/Missing Permissions/);
+    expect(step.error).not.toMatch(/Community feature/);
+    expect(step.opIds).toHaveLength(1);
+  });
+
+  test('when the features cannot be read, the original refusal stands', async () => {
+    env = makeEnv(STRICT);
+    const { record } = await env.service.createPlan({
+      guildId: env.guildId,
+      blueprint: forum,
+      clientId: 'test',
+    });
+    // The apply's own freshness check reads the server first; fail only the read after the refusal.
+    env.adapter.inject('fetchSnapshot', 'timeout_before', {
+      when: () => env!.adapter.calls.some((c) => c.method === 'createChannel'),
+    });
+    const result = await env.service.apply({
+      planId: record.id,
+      guildId: env.guildId,
+      clientId: 'test',
+      canDestroy: false,
+      continueOnError: false,
+      acceptBlocked: false,
+    });
+    const step = result.steps.find((s) => s.summary.includes('#room'))!;
+    expect(step.status).toBe('failed');
+    expect(step.error).toMatch(/type requires Community/);
+    expect(step.error).not.toMatch(/may or may not have been applied/);
+    expect(step.opIds).toHaveLength(1);
+  });
+
+  test('a NEWS server turning Community on creates announcement channels without waiting', async () => {
+    env = makeEnv(STRICT);
+    env.adapter.guild.features = ['NEWS'];
+    const bp = fresh({ system_channel: 'news' });
+    const { body, result } = await planAndApply(env, bp);
+    const settings = body.steps.find((s) => s.action === 'update_settings')!;
+    expect(settings.blocked).toBeUndefined();
+    const news = body.steps.find((s) => s.action === 'create_channel' && 'key' in s && s.key === 'news')!;
+    expect(news.dependsOn).not.toContain(settings.id);
+    expect(result.status).toBe('applied');
+  });
+});

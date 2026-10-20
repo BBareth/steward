@@ -231,6 +231,7 @@ describe('AutoMod rules Discord keeps for itself', () => {
     expect(step.error).toMatch(
       /answered the delete of AutoMod rule "Server mention guard" .* with success, but still lists the rule/,
     );
+    expect(step.opIds).toHaveLength(1);
     expect(env.store.findMappingById(env.guildId, 'automod', rule.id)).toBeDefined();
   });
 
@@ -252,6 +253,84 @@ describe('AutoMod rules Discord keeps for itself', () => {
     expect(result.status).toBe('applied');
     expect(env.adapter.automod.has(id)).toBe(false);
     expect(env.store.getMapping(env.guildId, 'automod', 'spam')).toBeUndefined();
+  });
+});
+
+describe('AutoMod deletes and refusals, found in review', () => {
+  const empty = { version: 1, roles: [], categories: [], messages: [] };
+  const createdRule = (e: TestEnv) => {
+    const rule = e.adapter.addAutoModRule({ name: 'Spam', triggerType: 3, creatorId: e.adapter.botUserId });
+    e.store.setMapping(e.guildId, 'automod', 'spam', rule.id, 'created');
+    return rule;
+  };
+
+  test('a delete whose response was lost, then 404s on retry, is done once the rule is gone', async () => {
+    env = makeEnv();
+    const rule = createdRule(env);
+    env.adapter.inject('deleteAutoModRule', 'timeout_after');
+    const { result } = await planAndApply(env, empty, { prune: { automod: true } }, true);
+    expect(result.status).toBe('applied');
+    expect(env.adapter.automod.has(rule.id)).toBe(false);
+    expect(env.store.getOperation(result.steps[0]!.opIds[0]!)!.status).toBe('succeeded');
+    expect(env.store.getMapping(env.guildId, 'automod', 'spam')).toBeUndefined();
+  });
+
+  test('a delete that cannot be read back still counts, with a note', async () => {
+    env = makeEnv();
+    const rule = createdRule(env);
+    env.adapter.inject('fetchAutoModRules', 'timeout_before', {
+      when: () => !env!.adapter.automod.has(rule.id),
+    });
+    const { result } = await planAndApply(env, empty, { prune: { automod: true } }, true);
+    const step = result.steps[0]!;
+    expect(step.status).toBe('succeeded');
+    expect(step.note).toMatch(/could not list the rules afterwards to confirm it/);
+    expect(env.store.getMapping(env.guildId, 'automod', 'spam')).toBeUndefined();
+  });
+
+  test('after a refusal, deletions in the same run wait unless continue_on_error is set', async () => {
+    for (const continueOnError of [false, true]) {
+      env?.cleanup();
+      env = makeEnv();
+      const old = env.adapter.addChannel({ name: 'old-log' });
+      env.store.setMapping(env.guildId, 'channel', 'old-log', old.id, 'created');
+      const rule = kept(env);
+      env.store.setMapping(env.guildId, 'automod', 'mentions', rule.id, 'exported');
+      const bp = {
+        ...empty,
+        automod: [
+          {
+            key: 'mentions',
+            name: 'Server mention guard',
+            trigger: { type: 'mention_spam', mention_total_limit: 9, raid_protection: true },
+            actions: [{ type: 'block_message' }],
+          },
+        ],
+      };
+      const { record } = await env.service.createPlan({
+        guildId: env.guildId,
+        blueprint: bp,
+        clientId: 'test',
+        options: { prune: { channels: true } } as never,
+      });
+      const result = await env.service.apply({
+        planId: record.id,
+        guildId: env.guildId,
+        clientId: 'test',
+        canDestroy: true,
+        continueOnError,
+        acceptBlocked: false,
+      });
+      const del = result.steps.find((s) => s.action === 'delete_channel')!;
+      expect(result.steps.find((s) => s.action === 'update_automod')!.status).toBe('failed');
+      if (continueOnError) {
+        expect(del.status).toBe('succeeded');
+      } else {
+        expect(del.status).toBe('skipped');
+        expect(del.error).toMatch(/Discord refused step .* deletions wait/);
+        expect(env.adapter.channels.has(old.id)).toBe(true);
+      }
+    }
   });
 });
 

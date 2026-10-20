@@ -63,13 +63,18 @@ First version. Not yet released or published as an image.
   fields that differ and keep actions steward does not model. A 404 on a rule
   Discord lists (rules Discord keeps for itself) fails just that step with a
   diagnosis, never deletes or recreates the rule, and lets independent steps
-  run; deletes are read back. Prune only takes rules steward created unless
+  run (deletions wait unless `continue_on_error`); deletes are read back. Prune only takes rules steward created unless
   `prune_unmanaged` is set.
 - Community: announcement, stage, forum and media channels are created after
   the settings step that turns Community on. Media channels count as needing
   Community; forums are planned with a warning instead. Turning Community on
   needs Administrator, and its prerequisites are checked on the values the
   server will have.
+
+- Publishing: `latest` now moves only for the newest release tag. Before,
+  the metadata action also tagged every other release (so re-running or
+  backporting an older tag moved `latest` back) and the newest-tag check
+  counted pre-releases.
 
 ### Documentation
 - Updating versus restarting: what `restart`, `up -d`, `pull` and `--build`

@@ -36,7 +36,7 @@ import type { AutoModRuleInfo, ChannelInfo, ChannelKind, GuildSnapshot, RoleInfo
 import { CHANNEL_TYPE_NUMBERS } from '../discord/types.js';
 import type { OverwriteSpec } from '../features/access.js';
 import { expandAccess, mergeOverwrites } from '../features/access.js';
-import { AFTER_COMMUNITY_KINDS, channelKindNeedsCommunity } from '../features/community.js';
+import { channelKindNeedsCommunity, waitsForCommunity } from '../features/community.js';
 import { buildMessageBody, parseColor } from '../features/messages.js';
 import { automodPatch, automodWriteBody, unmodelledActions } from '../ops/automod.js';
 import { roleOrderPlan } from '../ops/ordering.js';
@@ -749,7 +749,9 @@ class Planner {
       // channel into one, waits until the settings step has turned Community on.
       const converting = id !== null && e.kind !== 'category' && this.channel(id)?.kind !== e.kind;
       const afterSettings =
-        AFTER_COMMUNITY_KINDS.has(e.kind) && enablingCommunity && (id === null || converting);
+        waitsForCommunity(this.snap.guild.features, e.kind) &&
+        enablingCommunity &&
+        (id === null || converting);
       if (phase === 'channel' && afterSettings) continue;
       if (phase === 'community' && !afterSettings) continue;
       const settingsDep = phase === 'community' && this.settingsStepId ? [this.settingsStepId] : [];
@@ -1140,7 +1142,11 @@ class Planner {
         const value = s[field];
         const key = value ? refKey(channelRef(value)) : null;
         const entry = key ? this.entries.find((x) => x.key === key) : undefined;
-        if (entry && this.ids.channel.get(entry.key) === null && AFTER_COMMUNITY_KINDS.has(entry.kind)) {
+        if (
+          entry &&
+          this.ids.channel.get(entry.key) === null &&
+          waitsForCommunity(this.snap.guild.features, entry.kind)
+        ) {
           blocked ??= `settings.${field} is "${entry.key}", a ${entry.kind} channel that can only be created once Community is on; point it at a text channel`;
         }
       }

@@ -253,7 +253,9 @@ members holding a role bound to the blueprint key `owner`, `admin`,
 messages and webhook posts are never touched, and role-panel buttons keep
 working (they are buttons, not reactions). When it cannot tell who wrote a
 message or who reacted, it leaves the reaction. It needs Manage Messages in
-those channels; where Discord refuses, it pauses that channel for ten minutes.
+those channels; where Discord refuses, it pauses that channel for ten minutes
+(the whole server when Discord wants two-factor authentication on the bot
+owner's account).
 Removals are in `list_history` under the tool `reaction_guard` (Discord's own
 audit log does not record them), and `steward_status` shows whether the guard
 is configured, actually active, and what it has done.
@@ -272,6 +274,7 @@ those steps with the reason.
 | Channels and categories | Manage Channels |
 | Roles, overwrites, role panels, join roles | Manage Roles, plus every permission it should be able to grant: Discord only lets a bot allow or deny permissions it holds |
 | Server settings, AutoMod | Manage Server |
+| Turning Community on or off (`settings.community`, `update_guild_settings`) | Administrator: Discord requires it for that one change |
 | Posting rules, welcome and panel messages | View Channel, Send Messages, Embed Links in that channel |
 | Recovering cleanly from timeouts | View Audit Log (falls back to a weaker name/time match without it) |
 | Reaction guard | Manage Messages and Read Message History in the channels steward posts in |

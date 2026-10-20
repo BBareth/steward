@@ -350,8 +350,9 @@ and the plan warns about them. Some rules are kept by Discord itself: they are
 listed, but Discord can answer 404 Not Found when a bot changes or deletes
 them. steward then fails that step with what it found (still listed, readable
 by id or not), never deletes or recreates the rule, and runs the steps that
-do not depend on it. A delete is read back, so one Discord accepts but does
-not carry out is reported too. Change such a rule in the server's AutoMod
+do not depend on it, except deletions, which wait for a run without refusals
+unless `continue_on_error` is set. A delete is read back, so one Discord
+accepts but does not carry out is reported too. Change such a rule in the server's AutoMod
 settings in Discord, or make the blueprint match it.
 
 ## Plans in detail

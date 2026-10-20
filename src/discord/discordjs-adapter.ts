@@ -249,8 +249,9 @@ export class DiscordJsAdapter implements DiscordAdapter {
       .reactionAdd({
         ...event,
         guildOwnerId: client.guilds.cache.get(event.guildId)?.ownerId ?? null,
-        // Set at READY, before the ready event steward records its id on.
-        botUserId: client.user?.id ?? null,
+        // Known once the session is ready. Reactions that arrive earlier are
+        // kept: REST calls are refused until then anyway.
+        botUserId: this.current.botUserId,
       })
       .catch((error) =>
         this.options.logger.error('reaction handler failed', { error, guildId: event.guildId }),

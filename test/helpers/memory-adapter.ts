@@ -80,6 +80,11 @@ export interface MemoryAdapterOptions {
    * 'normalised' renumbers every role 1..n after each change.
    */
   rolePositions?: 'discord' | 'normalised';
+  /**
+   * Channel types refused without the Community feature (announcement is also
+   * allowed with NEWS). Defaults to announcement and stage.
+   */
+  communityChannelTypes?: number[];
 }
 
 export class MemoryDiscordAdapter implements DiscordAdapter {
@@ -360,6 +365,12 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     return value;
   }
 
+  private needsCommunity(type: number): boolean {
+    const f = this.guild.features;
+    if (f.includes('COMMUNITY') || (type === 5 && f.includes('NEWS'))) return false;
+    return (this.options.communityChannelTypes ?? [5, 13]).includes(type);
+  }
+
   /** Discord documents no JSON code for an unknown AutoMod rule, only the HTTP status. */
   private notFound(): DiscordRequestError {
     return new DiscordRequestError('http', 'Discord rejected the request: 404 Not Found', 404);
@@ -528,7 +539,7 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     this.requireGuildPerm(P.ManageChannels, 'creating channels needs Manage Channels');
     this.checkOverwriteBits(body, body.parent_id ? (this.channels.get(body.parent_id) ?? null) : null);
     const type = body.type ?? 0;
-    if ((type === 5 || type === 13) && !this.guild.features.includes('COMMUNITY')) {
+    if (this.needsCommunity(type)) {
       throw new DiscordRequestError(
         'http',
         'Discord rejected the request: Invalid Form Body (type requires Community)',
@@ -553,7 +564,7 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     const channel = this.requireChannel(channelId);
     if (!has(botChannelPermissions(this.snapshotNow(), channel), P.ManageChannels))
       this.forbid('editing needs Manage Channels');
-    if ((body.type === 5 || body.type === 13) && !this.guild.features.includes('COMMUNITY')) {
+    if (body.type !== undefined && this.needsCommunity(body.type)) {
       throw new DiscordRequestError(
         'http',
         'Discord rejected the request: Invalid Form Body (type requires Community)',
@@ -747,6 +758,9 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     if (body.premium_progress_bar_enabled !== undefined)
       g.premiumProgressBarEnabled = body.premium_progress_bar_enabled;
     if (body.features !== undefined) {
+      if (body.features.includes('COMMUNITY') !== g.features.includes('COMMUNITY')) {
+        if (!botStanding(this.snapshotNow()).isAdmin) this.forbid('changing Community needs Administrator');
+      }
       if (body.features.includes('COMMUNITY') && (!g.rulesChannelId || !g.publicUpdatesChannelId)) {
         throw new DiscordRequestError(
           'http',

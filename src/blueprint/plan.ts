@@ -60,7 +60,15 @@ export interface PlannerInput {
 }
 
 const TEXT_GROUP = new Set<ChannelKind>(['text', 'announcement', 'forum', 'media']);
+/**
+ * Channel types Discord ties to the Community feature. Announcement and stage
+ * channels need it (announcement channels also come with the older NEWS
+ * feature). Forum and media channels launched for Community servers and the
+ * API docs no longer say whether that still applies, so steward does not
+ * refuse them; when a plan turns Community on, all four wait until it is on.
+ */
 const COMMUNITY_TYPES = new Set(['announcement', 'stage']);
+const AFTER_COMMUNITY_TYPES = new Set(['announcement', 'stage', 'forum', 'media']);
 const BITRATE_LIMITS = [96000, 128000, 256000, 384000];
 
 const groupOf = (kind: ChannelKind | string): 'category' | 'text' | 'voice' =>
@@ -121,6 +129,9 @@ class Planner {
   private settingsStepId: string | null = null;
   private selfRolesStepId: string | null = null;
   private readonly communityEnabled: boolean;
+  /** Turning Community on is part of this plan. */
+  private readonly enablingCommunity: boolean;
+  private readonly hasNews: boolean;
 
   constructor(private readonly input: PlannerInput) {
     this.bp = input.blueprint;
@@ -132,6 +143,8 @@ class Planner {
       this.mappedIds.add(`${m.kind}:${m.discordId}`);
     }
     this.communityEnabled = this.snap.guild.features.includes('COMMUNITY');
+    this.enablingCommunity = !this.communityEnabled && this.bp.settings?.community === true;
+    this.hasNews = this.snap.guild.features.includes('NEWS');
     for (const cat of this.bp.categories) {
       this.entries.push({
         key: cat.key,
@@ -740,12 +753,14 @@ class Planner {
       if ((phase === 'category') !== (e.kind === 'category')) continue;
       if (!this.ids.channel.has(e.key)) continue;
       const id = this.ids.channel.get(e.key)!;
-      const needsCommunity = COMMUNITY_TYPES.has(e.kind) && !this.communityEnabled;
-      const enablingCommunity = this.bp.settings?.community === true;
-      // Creating an announcement/stage channel, or converting a text channel
-      // into one, has to wait until the settings step has turned Community on.
+      const needsCommunity =
+        COMMUNITY_TYPES.has(e.kind) && !this.communityEnabled && !(e.kind === 'announcement' && this.hasNews);
+      const enablingCommunity = this.enablingCommunity;
+      // Creating a channel of a type tied to Community, or converting a text
+      // channel into one, waits until the settings step has turned Community on.
       const converting = id !== null && e.kind !== 'category' && this.channel(id)?.kind !== e.kind;
-      const afterSettings = needsCommunity && enablingCommunity && (id === null || converting);
+      const afterSettings =
+        AFTER_COMMUNITY_TYPES.has(e.kind) && enablingCommunity && (id === null || converting);
       if (phase === 'channel' && afterSettings) continue;
       if (phase === 'community' && !afterSettings) continue;
       const settingsDep = phase === 'community' && this.settingsStepId ? [this.settingsStepId] : [];
@@ -767,6 +782,20 @@ class Planner {
             ref: e.key,
           });
           continue;
+        }
+        if ((e.kind === 'forum' || e.kind === 'media') && !this.communityEnabled && !enablingCommunity) {
+          this.warn(
+            'community_may_be_needed',
+            `${e.kind} channel "${e.key}" is created on a server without the Community feature. Discord launched ${e.kind} channels for Community servers and does not document whether that still applies; if Discord refuses, set settings.community: true or use a text channel`,
+            e.key,
+          );
+        }
+        if (e.kind === 'media') {
+          this.warn(
+            'media_channel_beta',
+            `media channel "${e.key}": Discord documents media channels as still in development and may only allow them on some servers`,
+            e.key,
+          );
         }
         const tier = this.snap.guild.premiumTier;
         const bitrateLimit = BITRATE_LIMITS[tier] ?? 96000;
@@ -819,7 +848,7 @@ class Planner {
           (ch.kind === 'text' && e.kind === 'announcement') ||
           (ch.kind === 'announcement' && e.kind === 'text')
         ) {
-          if (this.communityEnabled || enablingCommunity) {
+          if (this.communityEnabled || this.hasNews || enablingCommunity) {
             changes.push({ field: 'type', from: ch.kind, to: e.kind });
             changed.type = CHANNEL_TYPE_NUMBERS[e.kind as keyof typeof CHANNEL_TYPE_NUMBERS];
           } else {
@@ -1106,7 +1135,26 @@ class Planner {
       this.unchanged++;
       return;
     }
-    const { dependsOn, blocked } = this.deps(refs);
+    const deps = this.deps(refs);
+    const { dependsOn } = deps;
+    let blocked = deps.blocked;
+    if (this.enablingCommunity) {
+      // Community needs its rules and updates channels first, so they cannot
+      // be channels that are only created once Community is on.
+      for (const [field, value] of [
+        ['rules_channel', s.rules_channel],
+        ['public_updates_channel', s.public_updates_channel],
+      ] as const) {
+        const key = value ? refKey(channelRef(value)) : null;
+        const entry = key ? this.entries.find((x) => x.key === key) : undefined;
+        if (entry && this.ids.channel.get(entry.key) === null && AFTER_COMMUNITY_TYPES.has(entry.kind)) {
+          blocked ??= `settings.${field} is "${entry.key}", a ${entry.kind} channel that can only be created once Community is on; point it at a text channel`;
+        }
+      }
+    }
+    if (fields.community !== undefined && !this.bot.isAdmin) {
+      blocked ??= 'Discord requires Administrator to turn Community on or off';
+    }
     this.settingsStepId = this.add({
       action: 'update_settings',
       fields,

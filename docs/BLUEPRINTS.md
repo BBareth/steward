@@ -165,7 +165,7 @@ Channel fields:
 | Field | Applies to | Notes |
 | --- | --- | --- |
 | `key`, `name` | all | Text-like channel names must already be in Discord's form: lower case, no spaces (`general-chat`). |
-| `type` | all | `text` (default), `voice`, `announcement`, `stage`, `forum`, `media`. Announcement and stage need the Community feature. |
+| `type` | all | `text` (default), `voice`, `announcement`, `stage`, `forum`, `media`. Announcement and stage need the Community feature (announcement also works with the older NEWS feature); forum and media may, see below. |
 | `topic` | text, announcement, forum, media, stage | |
 | `nsfw` | all | |
 | `slowmode_seconds` | all text chats | 0-21600 |
@@ -239,8 +239,18 @@ settings:
 
 Every field is optional. `community: true` needs `rules_channel`,
 `public_updates_channel`, verification `low` or higher and
-`explicit_content_filter: all_members`; steward creates the referenced channels
-first, enables Community, then creates any announcement and stage channels.
+`explicit_content_filter: all_members`, and the bot needs Administrator to
+turn Community on or off. steward creates the rules and updates channels
+first, enables Community, then creates the announcement, stage, forum and
+media channels. Point `rules_channel` and `public_updates_channel` at text
+channels: a channel that is only created after Community is on cannot be one,
+and the plan blocks that.
+
+Forum and media channels launched for Community servers, and Discord's API
+docs no longer say whether that still applies. steward plans them on any
+server with a warning; if Discord refuses one, the failed step says the type
+may need Community and lists the server's features. Media channels are still
+documented as in development and may need access Discord grants separately.
 Server icon, banner and other image settings are not managed.
 
 ### Messages

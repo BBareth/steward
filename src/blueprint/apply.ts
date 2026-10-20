@@ -307,7 +307,7 @@ export class PlanExecutor {
           match: { kind: 'channel', name: step.fields.name!, type: step.fields.type, parentId },
           run: (reason) => adapter.createChannel(g, body, reason),
           resultId: (c) => c.id,
-        });
+        }).catch((error: unknown) => this.explainChannelRefusal(error, step.fields.type, r));
         const id =
           out.status === 'recovered' ? out.recoveredId : out.status === 'succeeded' ? out.result.id : null;
         if (!id) throw new StewardError('internal', 'create returned no id');
@@ -677,6 +677,34 @@ export class PlanExecutor {
         notFoundIsSuccess: true,
         run: (reason) => this.deps.adapter.deleteMessage(m.channelId, m.messageId, reason),
       }),
+    );
+  }
+
+  /**
+   * Discord does not say which error it gives when a server may not have a
+   * channel type, so a refused create of a type tied to Community says so.
+   */
+  private async explainChannelRefusal(
+    error: unknown,
+    type: number | undefined,
+    r: StepResult,
+  ): Promise<never> {
+    const kind = { 5: 'announcement', 13: 'stage', 15: 'forum', 16: 'media' }[type ?? -1];
+    const refused =
+      error instanceof OperationError &&
+      error.outcome === 'failed' &&
+      error.underlying instanceof DiscordRequestError &&
+      error.underlying.kind === 'http';
+    if (!kind || !refused) throw error;
+    r.opIds.push(error.opId);
+    const features = (await this.snapshot()).guild.features;
+    throw new StewardError(
+      'discord_error',
+      `${error.message}. Discord may only allow ${kind} channels on servers with the Community feature` +
+        (kind === 'announcement' ? ' (or the older NEWS feature)' : '') +
+        (kind === 'media' ? ', and media channels are still in development and may need extra access' : '') +
+        `; this server has: ${features.length ? features.join(', ') : 'no features'}`,
+      { opId: error.opId, features },
     );
   }
 

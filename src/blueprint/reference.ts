@@ -15,7 +15,7 @@ settings:            # optional; only listed fields are managed
   afk_timeout: 60|300|900|1800|3600
   system_channel_flags: { suppress_join_notifications, suppress_premium_subscriptions, suppress_guild_reminders, suppress_join_notification_replies }
   preferred_locale, premium_progress_bar, name, description
-  community: true|false     # needs rules_channel, public_updates_channel, verification >= low, filter all_members
+  community: true|false     # needs rules_channel, public_updates_channel (text channels), verification >= low, filter all_members, bot Administrator; announcement/stage/forum/media channels are created after it
 everyone: { permissions: [ViewChannel, SendMessages, ...] }   # exact @everyone permissions
 roles:               # listed top to bottom; that order is applied
   - key: moderator           # a-z 0-9 - _, unique among roles

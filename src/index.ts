@@ -1,6 +1,7 @@
 import { BlueprintService } from './blueprint/service.js';
 import { ConfigError, loadConfig } from './config.js';
 import { DiscordJsAdapter } from './discord/discordjs-adapter.js';
+import { ReactionGuard } from './features/reaction-guard.js';
 import { handlePanelButton } from './features/role-panels.js';
 import { handleMemberJoin } from './features/welcome.js';
 import { createHttpServer, hostnamesOnly } from './http/server.js';
@@ -40,9 +41,12 @@ async function main(): Promise<void> {
   }
   store.db.prepare("DELETE FROM tool_calls WHERE created_at < datetime('now', '-90 days')").run();
 
+  // The guard writes, so read-only mode leaves it off and does not request its intent.
+  const reactionGuardActive = config.reactionGuard && !config.readOnly;
   const adapter = new DiscordJsAdapter({
     token: config.discordToken,
     membersIntent: config.membersIntent,
+    reactionIntent: reactionGuardActive,
     requestTimeoutMs: config.discordRequestTimeoutMs,
     allowedGuildIds: config.guildIds,
     logger: logger.child({ component: 'discord' }),
@@ -60,7 +64,25 @@ async function main(): Promise<void> {
       allowDestructive: config.allowDestructive && !config.readOnly,
     },
   });
-  const app: AppContext = { config, store, adapter, logger, locks, blueprints, startedAt: new Date() };
+  const reactionGuard = config.reactionGuard
+    ? new ReactionGuard({
+        store,
+        adapter,
+        logger: logger.child({ component: 'reaction-guard' }),
+        allowedGuildIds: config.guildIds,
+        active: reactionGuardActive,
+      })
+    : undefined;
+  const app: AppContext = {
+    config,
+    store,
+    adapter,
+    logger,
+    locks,
+    blueprints,
+    reactionGuard,
+    startedAt: new Date(),
+  };
 
   await adapter.start({
     memberJoin:
@@ -68,6 +90,7 @@ async function main(): Promise<void> {
         ? (event) => handleMemberJoin(app, event).then(() => undefined)
         : undefined,
     buttonPress: config.readOnly ? undefined : (event) => handlePanelButton(app, event),
+    reactionAdd: reactionGuard?.active ? (event) => reactionGuard.handle(event) : undefined,
   });
 
   const mcp = createMcp(app);
@@ -90,6 +113,7 @@ async function main(): Promise<void> {
     readOnly: config.readOnly,
     allowDestructive: config.allowDestructive,
     membersIntent: config.membersIntent,
+    reactionGuard: reactionGuardActive ? 'active' : config.reactionGuard ? 'off (read-only)' : 'off',
   });
   const localOnly = hostnamesOnly(config.allowedHosts).every((h) =>
     ['localhost', '127.0.0.1', '[::1]'].includes(h),

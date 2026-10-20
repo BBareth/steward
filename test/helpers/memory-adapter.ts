@@ -3,6 +3,7 @@ import type {
   AuditLogEntry,
   ButtonPressEvent,
   DiscordAdapter,
+  ReactionAddEvent,
 } from '../../src/discord/adapter.js';
 import {
   ALL_PERMISSIONS,
@@ -272,6 +273,36 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
 
   setBotPermissions(perms: bigint): void {
     this.roles.get(this.botRoleId)!.permissions = perms;
+  }
+
+  /** Reactions per message, as `${encoded emoji}|${userId}`. */
+  reactions = new Map<string, Set<string>>();
+
+  /** Deliver a reaction the way the gateway would; `overrides` can drop fields Discord marks optional. */
+  async emitReactionAdd(
+    messageId: string,
+    userId: string,
+    emoji: { id: string | null; name: string | null },
+    overrides: Partial<ReactionAddEvent> = {},
+  ): Promise<void> {
+    const msg = this.messages.get(messageId)!;
+    const member = this.members.get(userId);
+    const segment = encodeURIComponent(emoji.id ? `${emoji.name}:${emoji.id}` : (emoji.name ?? ''));
+    if (!this.reactions.has(messageId)) this.reactions.set(messageId, new Set());
+    this.reactions.get(messageId)!.add(`${segment}|${userId}`);
+    await this.events.reactionAdd?.({
+      guildId: this.guildId,
+      channelId: msg.channelId,
+      messageId,
+      userId,
+      messageAuthorId: msg.authorId,
+      member: member ? { roleIds: [...member.roleIds], isBot: member.isBot } : null,
+      emoji,
+      burst: false,
+      guildOwnerId: this.ownerId,
+      botUserId: this.botUserId,
+      ...overrides,
+    });
   }
 
   async emitMemberJoin(member: MemberInfo): Promise<void> {
@@ -830,6 +861,23 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
       throw new DiscordRequestError('http', 'Discord rejected the request: Unknown Message', 404, 10008);
     }
     this.messages.delete(messageId);
+    return this.leave(mode, undefined);
+  }
+
+  async removeUserReaction(
+    channelId: string,
+    messageId: string,
+    emoji: string,
+    userId: string,
+  ): Promise<void> {
+    const mode = await this.enter('removeUserReaction', [channelId, messageId, emoji, userId]);
+    const msg = this.messages.get(messageId);
+    if (!msg || msg.channelId !== channelId) {
+      throw new DiscordRequestError('http', 'Discord rejected the request: Unknown Message', 404, 10008);
+    }
+    const perms = botChannelPermissions(this.snapshotNow(), this.requireChannel(channelId));
+    if (!has(perms, P.ManageMessages)) this.forbid("removing others' reactions needs Manage Messages");
+    this.reactions.get(messageId)?.delete(`${emoji}|${userId}`);
     return this.leave(mode, undefined);
   }
 

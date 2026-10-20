@@ -69,8 +69,15 @@ MCP client asks for.
 ## Discord connection
 
 - Gateway intents: `Guilds`, plus `GuildMembers` only when
-  `DISCORD_MEMBERS_INTENT=true`. Interactions (role-panel buttons) need no
-  intent.
+  `DISCORD_MEMBERS_INTENT=true`, and `GuildMessageReactions` only while the
+  reaction guard is active. Interactions (role-panel buttons) need no intent.
+- The reaction guard listens to the raw `MESSAGE_REACTION_ADD` dispatch, not
+  discord.js's cached reaction events, so it sees reactions on messages
+  discord.js never cached (steward posts over REST, so that is all of them).
+  The event carries the message author and the reacting member's roles; when
+  Discord leaves either out, steward reads the message or the member over REST
+  (neither needs a privileged intent) and otherwise keeps the reaction.
+  Removals go through the operation journal as tool `reaction_guard`.
 - Reads go to REST, not the gateway cache, so a plan sees what Discord has now,
   including changes steward itself made a moment ago. A snapshot is three
   requests: the guild (with roles and approximate counts), its channels, and

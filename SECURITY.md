@@ -91,7 +91,16 @@ the bot's role. The narrower permission set per feature is in the
 [README](./README.md#discord-permissions-and-intents).
 
 Gateway intents: `Guilds`; `GuildMembers` only if you enable welcome
-features. steward never requests Message Content or Presence.
+features; `GuildMessageReactions` only while the reaction guard
+(`DISCORD_BOT_REACTION_GUARD`, off by default and in read-only mode) is
+active. steward never requests Message Content or Presence.
+
+Discord's role hierarchy does not limit whose reactions a bot with Manage
+Messages can remove, so the reaction guard's own exemptions (bots, the server
+owner, roles bound to `owner`, `admin`, `moderator`, `bot`) are what protects
+staff. It acts only on messages steward's bot user wrote, only in the
+configured servers, and keeps a reaction whenever it cannot establish the
+author or the member.
 
 ## Reporting a vulnerability
 

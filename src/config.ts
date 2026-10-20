@@ -22,6 +22,8 @@ export interface Config {
   discordToken: string;
   guildIds: readonly string[];
   membersIntent: boolean;
+  /** Remove ordinary members' reactions from steward's own messages. */
+  reactionGuard: boolean;
   credentials: readonly Credential[];
   allowedHosts: readonly string[];
   allowedOrigins: readonly string[];
@@ -209,6 +211,7 @@ export function loadConfig(env: Env = process.env, read: FileReader = defaultRea
     discordToken: discordToken ?? '',
     guildIds,
     membersIntent: bool(env, 'DISCORD_MEMBERS_INTENT', false, problems),
+    reactionGuard: bool(env, 'DISCORD_BOT_REACTION_GUARD', false, problems),
     credentials,
     allowedHosts: hosts,
     allowedOrigins,

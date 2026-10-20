@@ -41,3 +41,38 @@ First version. Not yet released or published as an image.
   test) and a GHCR publishing workflow for `linux/amd64` and `linux/arm64`.
 - Tests against an in-memory Discord with fault injection and a real MCP
   client; an optional live test against a dedicated Discord server.
+- Opt-in reaction guard (`DISCORD_BOT_REACTION_GUARD`, default off, inactive
+  in read-only mode): removes ordinary members' reactions from messages
+  steward posted, including uncached ones, using only the non-privileged Guild
+  Message Reactions intent. Bots, the server owner and roles bound to `owner`,
+  `admin`, `moderator` and `bot` are exempt; `steward_status` reports whether
+  it is active.
+
+### Fixed
+- Role ordering with tied positions. Discord lets roles share a position and
+  breaks ties by id; the planner saw a difference that the executor could not
+  express, so apply reported "already in order" while verify still differed.
+  Plan, apply, verify and the role tools now share one calculation in
+  Discord's real order, renumber only roles below the bot, read the order back
+  after a change, and report a concrete blocker when there is no room.
+- Hierarchy warnings in `get_guild_overview` and `create_role` compared raw
+  positions while checks and writes used the id tie-breaker, so a role sharing
+  the bot's position could be reported as both manageable and not.
+- AutoMod: export no longer invents a mention limit or drops actions it cannot
+  describe, so an exported server re-plans to nothing. Updates send only the
+  fields that differ and keep actions steward does not model. A 404 on a rule
+  Discord lists (rules Discord keeps for itself) fails just that step with a
+  diagnosis, never deletes or recreates the rule, and lets independent steps
+  run; deletes are read back. Prune only takes rules steward created unless
+  `prune_unmanaged` is set.
+- Community: announcement, stage, forum and media channels are created after
+  the settings step that turns Community on. Media channels count as needing
+  Community; forums are planned with a warning instead. Turning Community on
+  needs Administrator, and its prerequisites are checked on the values the
+  server will have.
+
+### Documentation
+- Updating versus restarting: what `restart`, `up -d`, `pull` and `--build`
+  each change, which image tags exist (`edge`, `X.Y.Z`, `X.Y`, `latest` for
+  the newest release only), and how to update a deployment that is a plain
+  copy of the source.

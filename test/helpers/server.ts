@@ -39,6 +39,7 @@ export async function startServer(
     discordToken: 'not-a-real-token',
     guildIds: [env.guildId],
     membersIntent: true,
+    reactionGuard: false,
     credentials: [
       credential('full', FULL_TOKEN, ['read', 'write', 'destructive']),
       credential('reader', READ_TOKEN, ['read']),

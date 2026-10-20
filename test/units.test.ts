@@ -5,7 +5,9 @@ import {
   normaliseGuild,
   normaliseRole,
 } from '../src/discord/normalize.js';
-import { toRequestError } from '../src/discord/discordjs-adapter.js';
+import { toRequestError, truncateReason } from '../src/discord/discordjs-adapter.js';
+import { auditReason } from '../src/ops/journal.js';
+import { newId } from '../src/util/ids.js';
 import { DiscordAPIError, HTTPError } from 'discord.js';
 import { channelPositionUpdates, slotFill } from '../src/ops/ordering.js';
 import { buildMessageBody, escapeUserText, renderTemplate } from '../src/features/messages.js';
@@ -104,6 +106,60 @@ describe('normalising Discord payloads', () => {
     expect(toRequestError(Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }))).toMatchObject(
       { kind: 'network', uncertain: true },
     );
+  });
+});
+
+describe('audit-log reasons', () => {
+  const opId = newId('op');
+  const planId = newId('pln');
+  const reason = (userReason: string) =>
+    auditReason(opId, { planId, userReason }, 'create channel #général in Events');
+  const encoded = (s: string) => encodeURIComponent(s).length;
+
+  test('short reasons pass through unchanged', () => {
+    const r = reason('tidy up');
+    expect(truncateReason(r)).toBe(r);
+  });
+
+  test('cuts on encoded length and whole code points, keeping the operation ID', () => {
+    for (const filler of ['x', 'a b ', '🎉', '漢字かな', 'é🎉 ']) {
+      const r = reason(filler.repeat(600));
+      const t = truncateReason(r);
+      const kept = t.slice(0, -3);
+      expect(t.endsWith('...')).toBe(true);
+      expect(encoded(t)).toBeLessThanOrEqual(512);
+      // Filled to within one code point (at most 12 encoded) of the limit.
+      expect(encoded(t)).toBeGreaterThan(500);
+      expect(r.startsWith(kept)).toBe(true);
+      expect([...filler]).toContain([...kept].at(-1));
+      expect(t.startsWith(`steward ${opId} ${planId}: `)).toBe(true);
+    }
+  });
+
+  test('spaces count three times', () => {
+    const r = reason('please '.repeat(50));
+    expect(r.length).toBeLessThan(500);
+    expect(encoded(r)).toBeGreaterThan(512);
+    expect(encoded(truncateReason(r))).toBeLessThanOrEqual(512);
+  });
+
+  test('a reason exactly at the limit is kept whole', () => {
+    const fixed = encoded(reason('x')) - 1;
+    const atLimit = reason('x'.repeat(512 - fixed));
+    expect(encoded(atLimit)).toBe(512);
+    expect(truncateReason(atLimit)).toBe(atLimit);
+    const emojiAtLimit = reason(`${'x'.repeat(512 - fixed - 12)}🎉`);
+    expect(encoded(emojiAtLimit)).toBe(512);
+    expect(truncateReason(emojiAtLimit)).toBe(emojiAtLimit);
+
+    const over = reason('x'.repeat(513 - fixed));
+    const t = truncateReason(over);
+    expect(encoded(t)).toBe(512);
+    expect(t).toBe(`${over.slice(0, -4)}...`);
+  });
+
+  test('lone surrogates are replaced instead of throwing', () => {
+    expect(truncateReason(reason('a\uD83Cb'))).toBe(reason('a�b'));
   });
 });
 

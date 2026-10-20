@@ -132,7 +132,29 @@ export function toRequestError(error: unknown): Error {
   return new DiscordRequestError('network', redactText(e?.message ?? 'unknown error talking to Discord'));
 }
 
-const truncateReason = (reason: string) => (reason.length > 500 ? `${reason.slice(0, 497)}...` : reason);
+const MAX_AUDIT_REASON = 512;
+
+/**
+ * Discord takes 1-512 characters of X-Audit-Log-Reason counted after
+ * @discordjs/rest URL-encodes it, so a space costs 3 and an emoji 12. The cut
+ * is from the end on whole code points: the leading operation ID is what
+ * reconciliation searches the audit log for, and a split surrogate pair would
+ * make encodeURIComponent throw.
+ */
+export function truncateReason(reason: string): string {
+  // Lone surrogates (possible in user-supplied JSON strings) would throw too.
+  const text = reason.replace(/\p{Cs}/gu, '�');
+  if (encodeURIComponent(text).length <= MAX_AUDIT_REASON) return text;
+  const budget = MAX_AUDIT_REASON - '...'.length;
+  let used = 0;
+  let end = 0;
+  for (const ch of text) {
+    used += encodeURIComponent(ch).length;
+    if (used > budget) break;
+    end += ch.length;
+  }
+  return `${text.slice(0, end)}...`;
+}
 
 export class DiscordJsAdapter implements DiscordAdapter {
   private client: Client | null = null;

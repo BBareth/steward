@@ -70,6 +70,10 @@ First version. Not yet released or published as an image.
   Community; forums are planned with a warning instead. Turning Community on
   needs Administrator, and its prerequisites are checked on the values the
   server will have.
+- Audit-log reasons are cut to Discord's 512-character limit as measured after
+  URL encoding, where a space costs 3 characters and an emoji 12, instead of
+  to 500 raw characters. The cut keeps whole code points and the leading
+  operation ID that reconciliation searches for.
 
 ### Documentation
 - Updating versus restarting: what `restart`, `up -d`, `pull` and `--build`

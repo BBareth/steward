@@ -550,6 +550,55 @@ describe('hierarchy and permissions are checked before mutation', () => {
   });
 });
 
+describe('community', () => {
+  test('enabling Community and converting a channel to announcement happen in the right order', async () => {
+    env = makeEnv();
+    const news = env.adapter.addChannel({ name: 'news' });
+    const bp = {
+      version: 1,
+      settings: {
+        community: true,
+        rules_channel: 'rules',
+        public_updates_channel: 'mod-updates',
+        verification_level: 'low',
+        explicit_content_filter: 'all_members',
+      },
+      channels: [
+        { key: 'rules', name: 'rules' },
+        { key: 'mod-updates', name: 'mod-updates' },
+        { key: 'news', name: 'news', type: 'announcement', id: news.id },
+        { key: 'stage', name: 'Town Hall', type: 'stage' },
+      ],
+    };
+    const { body, result } = await planAndApply(env, bp);
+    const order = body.steps.map((s) => s.action);
+    expect(order.indexOf('update_settings')).toBeLessThan(order.indexOf('update_channel'));
+    const convert = body.steps.find((s) => s.action === 'update_channel')!;
+    expect(convert.dependsOn).toContain(body.steps.find((s) => s.action === 'update_settings')!.id);
+    expect(result.status).toBe('applied');
+    expect(env.adapter.channels.get(news.id)!.kind).toBe('announcement');
+    expect(env.adapter.guild.features).toContain('COMMUNITY');
+    expect((await env.service.verify(env.guildId, bp)).inSync).toBe(true);
+  });
+
+  test('without Community, announcement channels are reported as unsupported, not attempted', async () => {
+    env = makeEnv();
+    const { body } = await env.service.createPlan({
+      guildId: env.guildId,
+      blueprint: {
+        version: 1,
+        channels: [
+          { key: 'ann', name: 'ann', type: 'announcement' },
+          { key: 'chat', name: 'chat' },
+        ],
+      },
+      clientId: 't',
+    });
+    expect(body.unsupported.map((u) => u.code)).toEqual(['needs_community']);
+    expect(body.steps.map((s) => s.summary)).toEqual(['create text #chat']);
+  });
+});
+
 describe('managed messages', () => {
   test('edits in place when content changes, re-posts if deleted by hand', async () => {
     env = makeEnv();

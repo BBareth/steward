@@ -1,0 +1,12 @@
+# Add to ~/.codex/config.toml. Export STEWARD_MCP_TOKEN in the shell that
+# starts Codex; Codex sends it as "Authorization: Bearer <token>".
+[mcp_servers.steward]
+url = "http://192.168.1.20:8787/mcp"
+bearer_token_env_var = "STEWARD_MCP_TOKEN"
+
+# Optional. Codex's default tool timeout (300 s) is already longer than
+# steward's apply wait (APPLY_WAIT_SECONDS, 40 s by default).
+# tool_timeout_sec = 300
+
+# Optional: hide the deletion tools from this client even if its token allows them.
+# disabled_tools = ["delete_channel", "delete_role", "delete_message", "delete_role_panel", "delete_automod_rule"]

@@ -31,6 +31,18 @@ describe('MCP over Streamable HTTP with a real client', () => {
     const del = tools.find((t) => t.name === 'delete_channel')!;
     expect(del.annotations?.destructiveHint).toBe(true);
     expect(tools.find((t) => t.name === 'list_roles')!.annotations?.readOnlyHint).toBe(true);
+    expect(tools.find((t) => t.name === 'create_channel')!.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+    });
+    expect(tools.find((t) => t.name === 'update_channel')!.annotations).toMatchObject({
+      destructiveHint: true,
+      idempotentHint: true,
+    });
+    expect(tools.find((t) => t.name === 'apply_plan')!.annotations).toMatchObject({
+      destructiveHint: true,
+      idempotentHint: false,
+    });
 
     const status = await call(client, 'steward_status');
     expect(status.isError).toBe(false);

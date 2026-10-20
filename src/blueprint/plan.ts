@@ -702,8 +702,13 @@ class Planner {
       const id = this.ids.channel.get(e.key)!;
       const needsCommunity = COMMUNITY_TYPES.has(e.kind) && !this.communityEnabled;
       const enablingCommunity = this.bp.settings?.community === true;
-      if (phase === 'channel' && needsCommunity && id === null && enablingCommunity) continue; // after settings
-      if (phase === 'community' && !(needsCommunity && id === null && enablingCommunity)) continue;
+      // Creating an announcement/stage channel, or converting a text channel
+      // into one, has to wait until the settings step has turned Community on.
+      const converting = id !== null && e.kind !== 'category' && this.channel(id)?.kind !== e.kind;
+      const afterSettings = needsCommunity && enablingCommunity && (id === null || converting);
+      if (phase === 'channel' && afterSettings) continue;
+      if (phase === 'community' && !afterSettings) continue;
+      const settingsDep = phase === 'community' && this.settingsStepId ? [this.settingsStepId] : [];
 
       const parentRef = e.category ? channelRef(e.category.key) : null;
       const specs = this.desiredOverwrites(e);
@@ -726,7 +731,7 @@ class Planner {
         const tier = this.snap.guild.premiumTier;
         const bitrateLimit = BITRATE_LIMITS[tier] ?? 96000;
         const dependsOn = [...parentDeps.dependsOn, ...overwriteDeps.dependsOn];
-        if (phase === 'community' && this.settingsStepId) dependsOn.push(this.settingsStepId);
+        dependsOn.push(...settingsDep);
         const stepId = this.add({
           action: 'create_channel',
           key: e.key,
@@ -822,7 +827,7 @@ class Planner {
           changes,
           summary: `update ${e.kind === 'category' ? 'category' : '#'}${ch.name}: ${changes.map((c) => c.field).join(', ')}`,
           destructive: false,
-          dependsOn: parentDeps.dependsOn,
+          dependsOn: [...parentDeps.dependsOn, ...settingsDep],
           blocked: parentDeps.blocked ?? fieldBlock,
         });
       }

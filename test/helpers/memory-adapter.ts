@@ -505,6 +505,14 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     const channel = this.requireChannel(channelId);
     if (!has(botChannelPermissions(this.snapshotNow(), channel), P.ManageChannels))
       this.forbid('editing needs Manage Channels');
+    if ((body.type === 5 || body.type === 13) && !this.guild.features.includes('COMMUNITY')) {
+      throw new DiscordRequestError(
+        'http',
+        'Discord rejected the request: Invalid Form Body (type requires Community)',
+        400,
+        50035,
+      );
+    }
     this.checkOverwriteBits(body, channel);
     this.applyChannelBody(channel, body);
     this.audit_(11, channelId, reason);

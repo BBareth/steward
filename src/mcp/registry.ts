@@ -90,6 +90,47 @@ export function errorResult(error: unknown): ToolResult {
   return { isError: true, content: [{ type: 'text', text: json({ error: errorPayload(error) }) }] };
 }
 
+/** Tools that only add things; every other writing tool may change or remove existing state. */
+const ADDITIVE = new Set(['create_channel', 'create_role']);
+/** Writing tools where repeating the same call has no further effect. */
+const IDEMPOTENT = new Set([
+  'update_channel',
+  'update_role',
+  'reorder_channels',
+  'reorder_roles',
+  'set_channel_permissions',
+  'configure_channel_access',
+  'assign_roles',
+  'update_guild_settings',
+  'edit_message',
+  'configure_welcome',
+  'manage_self_roles',
+  'upsert_role_panel',
+  'upsert_automod_rule',
+  'map_resource',
+  'delete_channel',
+  'delete_role',
+  'delete_message',
+  'delete_role_panel',
+  'delete_automod_rule',
+]);
+
+/**
+ * MCP behaviour hints, which clients use to decide what needs confirmation.
+ * The spec's default for a non-read-only tool is "destructive"; only tools
+ * that purely add are marked otherwise.
+ */
+export function annotationsFor(def: AnyToolDef) {
+  if (def.scope === 'read') return { readOnlyHint: true, openWorldHint: false, ...def.annotations };
+  return {
+    readOnlyHint: false,
+    destructiveHint: !ADDITIVE.has(def.name),
+    idempotentHint: IDEMPOTENT.has(def.name),
+    openWorldHint: false,
+    ...def.annotations,
+  };
+}
+
 export function registerTools(
   server: McpServer,
   app: AppContext,
@@ -106,12 +147,7 @@ export function registerTools(
         title: def.title,
         description: def.description,
         inputSchema: def.input,
-        annotations: {
-          readOnlyHint: def.scope === 'read',
-          destructiveHint: def.scope === 'destructive',
-          openWorldHint: false,
-          ...def.annotations,
-        },
+        annotations: annotationsFor(def),
       },
       async (args: unknown) => {
         const started = Date.now();

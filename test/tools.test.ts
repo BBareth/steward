@@ -269,12 +269,13 @@ describe('other bots', () => {
     const self = await call<{ url: string; permission_names: string[] }>(client, 'generate_invite_link', {
       guild_id,
     });
+    // steward registers no slash commands, so its own link asks for the bot scope only.
     expect(self.data.url).toMatch(
-      /^https:\/\/discord\.com\/oauth2\/authorize\?client_id=\d+&scope=bot\+applications\.commands&permissions=\d+/,
+      /^https:\/\/discord\.com\/oauth2\/authorize\?client_id=\d+&scope=bot&permissions=\d+/,
     );
     expect(self.data.url).toContain(`guild_id=${guild_id}`);
     expect(self.data.permission_names).toContain('ManageRoles');
-    const other = await call<{ limitations: string[]; permission_names: string[] }>(
+    const other = await call<{ url: string; limitations: string[]; permission_names: string[] }>(
       client,
       'generate_invite_link',
       {
@@ -283,6 +284,7 @@ describe('other bots', () => {
       },
     );
     expect(other.data.permission_names).toEqual(['SendMessages', 'EmbedLinks']);
+    expect(other.data.url).toContain('scope=bot+applications.commands');
     expect(other.data.limitations.join(' ')).toMatch(/cannot authorise the install/);
     expect(other.data.limitations.join(' ')).toMatch(/cannot invoke another bot's slash commands/);
   });

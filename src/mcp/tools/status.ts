@@ -103,7 +103,12 @@ export const statusTools = [
         .describe('Permission preset for steward.'),
       permissions: permissionNamesInput.optional().describe('Explicit permissions instead of a preset.'),
       guild_id: snowflake.optional().describe('Pre-select this server in the authorisation screen.'),
-      include_slash_commands: z.boolean().default(true).describe('Add the applications.commands scope.'),
+      include_slash_commands: z
+        .boolean()
+        .optional()
+        .describe(
+          'Add the applications.commands scope. Default: off for steward (it has no commands), on for other bots.',
+        ),
     }),
     handler: async (a, call) => {
       const self = !a.application_id;
@@ -119,7 +124,7 @@ export const statusTools = [
         : INVITE_PRESETS[a.preset ?? (self ? 'recommended' : 'inspect_only')]!;
       const params = new URLSearchParams({
         client_id: appId,
-        scope: ['bot', ...(a.include_slash_commands ? ['applications.commands'] : [])].join(' '),
+        scope: ['bot', ...((a.include_slash_commands ?? !self) ? ['applications.commands'] : [])].join(' '),
         permissions: bits.toString(),
         integration_type: '0',
       });

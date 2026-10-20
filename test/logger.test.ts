@@ -6,7 +6,12 @@ test('secrets never reach log lines, nested or not', () => {
   const lines: string[] = [];
   const log = createLogger({ write: (l) => lines.push(l) });
   registerSecret('super-secret-mcp-token-value-1234567890');
-  const discordLike = 'MTIzNDU2Nzg5MDEyMzQ1Njc4OQ.GaBcDe.abcdefghijklmnopqrstuvwxyz0123456789AB';
+  // Assembled at runtime so no token-shaped literal sits in the repository.
+  const discordLike = [
+    Buffer.from('123456789012345678901').toString('base64url'),
+    'GaBcDe',
+    'x'.repeat(38),
+  ].join('.');
   log.info('connecting with super-secret-mcp-token-value-1234567890', {
     headers: { authorization: 'Bearer abcdef' },
     nested: { message: `token was ${discordLike}` },

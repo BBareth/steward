@@ -1,0 +1,45 @@
+services:
+  steward:
+    # Pulls the published image when there is one. To build from this checkout
+    # instead (always works, even before anything is published):
+    #   docker compose up -d --build
+    image: ${STEWARD_IMAGE:-ghcr.io/bbareth/steward:latest}
+    build: .
+    container_name: steward
+    init: true
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      DATABASE_PATH: /data/steward.db
+    # Published on loopback only by default. To reach it from your LAN or VPN,
+    # set STEWARD_BIND_ADDRESS to the host's LAN or VPN address (see .env.example)
+    # and list the name clients will use in MCP_ALLOWED_HOSTS.
+    ports:
+      - '${STEWARD_BIND_ADDRESS:-127.0.0.1}:${STEWARD_PORT:-8787}:8787'
+    volumes:
+      - steward_data:/data
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:8787/readyz']
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+
+volumes:
+  steward_data:

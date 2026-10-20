@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "steward": {
+      "type": "http",
+      "url": "http://192.168.1.20:8787/mcp",
+      "headers": {
+        "Authorization": "Bearer ${STEWARD_MCP_TOKEN}"
+      }
+    }
+  }
+}

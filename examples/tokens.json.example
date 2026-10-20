@@ -1,0 +1,15 @@
+{
+  "tokens": [
+    {
+      "name": "claude-code-laptop",
+      "sha256": "<sha256 of the token, from: node scripts/generate-token.mjs --name claude-code-laptop --scopes read,write,destructive>",
+      "scopes": ["read", "write", "destructive"]
+    },
+    {
+      "name": "codex-readonly",
+      "sha256": "<sha256 of another token>",
+      "scopes": ["read"],
+      "guilds": ["123456789012345678"]
+    }
+  ]
+}

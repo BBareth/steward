@@ -294,10 +294,22 @@ export class DiscordJsAdapter implements DiscordAdapter {
     const rest = this.rest();
     const botId = this.current.botUserId!;
     return this.call(async () => {
-      const [guild, channels, member] = await Promise.all([
-        rest.get(Routes.guild(guildId), {
+      let guild: APIGuild;
+      try {
+        guild = (await rest.get(Routes.guild(guildId), {
           query: new URLSearchParams({ with_counts: 'true' }),
-        }) as Promise<APIGuild>,
+        })) as APIGuild;
+      } catch (error) {
+        const e = toRequestError(error);
+        if (e instanceof DiscordRequestError && (e.status === 404 || e.status === 403)) {
+          throw new StewardError(
+            'not_found',
+            `the bot is not a member of guild ${guildId}, or it does not exist; invite it with generate_invite_link`,
+          );
+        }
+        throw e;
+      }
+      const [channels, member] = await Promise.all([
         rest.get(Routes.guildChannels(guildId)) as Promise<APIChannel[]>,
         rest.get(Routes.guildMember(guildId, botId)) as Promise<APIGuildMember>,
       ]);

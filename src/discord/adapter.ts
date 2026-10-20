@@ -38,9 +38,30 @@ export interface ButtonPressEvent {
   reply(text: string): Promise<void>;
 }
 
+/** Someone added a reaction to a message in a configured guild (from the raw gateway event). */
+export interface ReactionAddEvent {
+  guildId: string;
+  channelId: string;
+  messageId: string;
+  userId: string;
+  /** Who wrote the message. Discord marks this optional; null when it was left out. */
+  messageAuthorId: string | null;
+  /** The reacting member as the event carries it; isBot is null when the user object was left out. */
+  member: { roleIds: string[]; isBot: boolean | null } | null;
+  emoji: { id: string | null; name: string | null };
+  /** A super reaction. */
+  burst: boolean;
+  /** From the gateway session's guild cache; null if unknown. */
+  guildOwnerId: string | null;
+  /** The bot's own user id as the gateway session knows it; null before READY. */
+  botUserId: string | null;
+}
+
 export interface AdapterEvents {
   memberJoin?: (event: MemberJoinEvent) => Promise<void>;
   buttonPress?: (event: ButtonPressEvent) => Promise<void>;
+  /** Only delivered when the adapter was built with the reaction intent. */
+  reactionAdd?: (event: ReactionAddEvent) => Promise<void>;
 }
 
 /**
@@ -59,6 +80,8 @@ export interface DiscordAdapter {
   fetchSnapshot(guildId: string): Promise<GuildSnapshot>;
   fetchMember(guildId: string, userId: string): Promise<MemberInfo | null>;
   fetchAutoModRules(guildId: string): Promise<AutoModRuleInfo[]>;
+  /** One rule by id; null when Discord answers 404 for it. */
+  fetchAutoModRule(guildId: string, ruleId: string): Promise<AutoModRuleInfo | null>;
   fetchMessage(channelId: string, messageId: string): Promise<MessageInfo | null>;
   /** Most recent messages in a channel, newest first. Content of other people's messages may be empty without the Message Content intent. */
   fetchRecentMessages(channelId: string, limit: number): Promise<MessageInfo[]>;
@@ -96,4 +119,9 @@ export interface DiscordAdapter {
     reason: string,
   ): Promise<AutoModRuleInfo>;
   deleteAutoModRule(guildId: string, ruleId: string, reason: string): Promise<void>;
+  /**
+   * Remove one user's reaction. `emoji` is the already URL-encoded route
+   * segment. Discord documents no audit-log reason for this endpoint.
+   */
+  removeUserReaction(channelId: string, messageId: string, emoji: string, userId: string): Promise<void>;
 }

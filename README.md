@@ -96,10 +96,13 @@ MCP_ALLOWED_HOSTS=localhost,127.0.0.1,192.168.1.20,steward.lan
 
 The [Publish image](./.github/workflows/publish.yml) workflow pushes
 multi-arch images (`linux/amd64`, `linux/arm64`) to
-`ghcr.io/bbareth/steward` once it has run: `edge` from `main`, `X.Y.Z` and
-`latest` from release tags. Until then — or if you prefer — build from source
-as above. `docker compose up -d` without `--build` pulls the image if it
-exists and builds from the checkout if it does not.
+`ghcr.io/bbareth/steward` once it has run: `edge` from every push to `main`,
+`X.Y.Z` and `X.Y` from release tags, and `latest` for the newest release only
+(there is none until the first release tag). Until then — or if you prefer —
+build from source as above. `docker compose up -d` uses the image already on
+the host and only pulls (or builds) when there is none; to move to a newer
+published image run `docker compose pull` first. Restarting the container
+never fetches anything. [Updating](./docs/SETUP.md#updating) has the details.
 
 </details>
 
@@ -219,6 +222,7 @@ each one.
 | `MCP_ALLOWED_HOSTS` | `localhost,127.0.0.1,[::1]` | Host names clients use. Anything else gets 403 (DNS-rebinding protection). |
 | `MCP_ALLOWED_ORIGINS` | — | Browser origins allowed. Empty refuses all browsers. |
 | `DISCORD_MEMBERS_INTENT` | `false` | Request the privileged Server Members intent (welcome messages, join roles). |
+| `DISCORD_BOT_REACTION_GUARD` | `false` | Remove ordinary members' reactions from messages steward posted. Requests the non-privileged Guild Message Reactions intent; off in read-only mode. See below. |
 | `READ_ONLY` | `false` | Inspection only; no tool that changes Discord is offered. |
 | `ALLOW_DESTRUCTIVE` | `false` | Allow delete tools and plans that prune. |
 | `STEWARD_BIND_ADDRESS` | `127.0.0.1` | Compose only: host address the port is published on. |
@@ -236,7 +240,26 @@ missing or malformed.
 
 **Gateway intents.** `Guilds` only, by default. `GuildMembers` (privileged)
 is requested only with `DISCORD_MEMBERS_INTENT=true`, and only welcome
-messages and join roles need it. Message Content is never requested.
+messages and join roles need it. `GuildMessageReactions` (not privileged) is
+requested only while the reaction guard is active. Message Content is never
+requested.
+
+**Reaction guard.** With `DISCORD_BOT_REACTION_GUARD=true` (and not
+`READ_ONLY`), steward removes reactions that ordinary members add to messages
+steward itself posted, in the configured servers only, including old messages
+the bot never cached. It keeps reactions from bots, the server owner, and
+members holding a role bound to the blueprint key `owner`, `admin`,
+`moderator` or `bot`. Reactions on anyone else's messages, other bots'
+messages and webhook posts are never touched, and role-panel buttons keep
+working (they are buttons, not reactions). When it cannot tell who wrote a
+message, who reacted or who owns the server, it leaves the reaction. It needs
+Manage Messages in those channels; where Discord refuses, it pauses that
+channel for ten minutes
+(the whole server when Discord wants two-factor authentication on the bot
+owner's account).
+Removals are in `list_history` under the tool `reaction_guard` (Discord's own
+audit log does not record them), and `steward_status` shows whether the guard
+is configured, actually active, and what it has done.
 
 **Where the bot's role goes.** Discord lets a bot manage only roles _below_ its
 own highest role — Administrator does not change that. Drag the bot's role
@@ -252,8 +275,10 @@ those steps with the reason.
 | Channels and categories | Manage Channels |
 | Roles, overwrites, role panels, join roles | Manage Roles, plus every permission it should be able to grant: Discord only lets a bot allow or deny permissions it holds |
 | Server settings, AutoMod | Manage Server |
+| Turning Community on or off (`settings.community`, `update_guild_settings`) | Administrator: Discord requires it for that one change |
 | Posting rules, welcome and panel messages | View Channel, Send Messages, Embed Links in that channel |
 | Recovering cleanly from timeouts | View Audit Log (falls back to a weaker name/time match without it) |
+| Reaction guard | Manage Messages and Read Message History in the channels steward posts in |
 
 `generate_invite_link` builds an install URL with these (`recommended`) or
 Administrator.

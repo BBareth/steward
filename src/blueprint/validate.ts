@@ -236,6 +236,15 @@ export function validateBlueprint(input: unknown): ValidationResult {
       );
     }
     if (s.community) {
+      for (const field of ['rules_channel', 'public_updates_channel'] as const) {
+        const ref = s[field];
+        if (ref && channelKinds.get(ref) === 'announcement') {
+          warn(
+            `settings.${field}`,
+            `"${ref}" is an announcement channel; when this blueprint turns Community on, it can only be created afterwards, so point ${field} at a text channel`,
+          );
+        }
+      }
       if (!s.rules_channel) err('settings.community', 'a Community server needs "rules_channel"');
       if (!s.public_updates_channel)
         err('settings.community', 'a Community server needs "public_updates_channel"');
@@ -249,13 +258,20 @@ export function validateBlueprint(input: unknown): ValidationResult {
       }
     }
   }
-  const needsCommunity = channels.filter(
-    ({ channel }) => channel.type === 'announcement' || channel.type === 'stage',
+  const needsCommunity = channels.filter(({ channel }) =>
+    ['announcement', 'stage', 'media'].includes(channel.type),
   );
   if (needsCommunity.length > 0 && !s?.community) {
     warn(
       needsCommunity[0]!.path,
-      'announcement and stage channels need the Community feature; the plan will report them as unsupported unless the server is already a Community server or "settings.community" is true',
+      'announcement, stage and media channels need the Community feature (announcement channels also work with the older NEWS feature); the plan will report them as unsupported unless the server already has it or "settings.community" is true',
+    );
+  }
+  const forums = channels.filter(({ channel }) => channel.type === 'forum');
+  if (forums.length > 0 && !s?.community) {
+    warn(
+      forums[0]!.path,
+      'forum channels launched for Community servers, and Discord no longer documents whether that applies; if Discord refuses one, set "settings.community" to true, and steward creates it after turning Community on',
     );
   }
 

@@ -61,7 +61,7 @@ read -rs DT && sed -i "s|^DISCORD_TOKEN=.*|DISCORD_TOKEN=$DT|" .env && unset DT
 **Check** (prints names only, never values):
 
 ```bash
-grep -E '^(DISCORD_GUILD_IDS|MCP_ALLOWED_HOSTS|STEWARD_BIND_ADDRESS|ALLOW_DESTRUCTIVE|READ_ONLY|DISCORD_MEMBERS_INTENT)=' .env
+grep -E '^(DISCORD_GUILD_IDS|MCP_ALLOWED_HOSTS|STEWARD_BIND_ADDRESS|ALLOW_DESTRUCTIVE|READ_ONLY|DISCORD_MEMBERS_INTENT|DISCORD_BOT_REACTION_GUARD)=' .env
 grep -cE '^DISCORD_TOKEN=.+' .env      # 1
 grep -cE '^MCP_AUTH_TOKEN=.{32,}' .env  # 1
 stat -c %a .env                         # 600
@@ -131,7 +131,9 @@ Keep this shell for step 6, then `unset TOKEN`.
 
 **Check:** `steward_status` reports `discord.state: "ready"`, and every guild in
 `guilds` has `bot_present: true`. `bot_present: false` means the bot has not
-been invited there yet — go to step 6.
+been invited there yet — go to step 6. If the operator set
+`DISCORD_BOT_REACTION_GUARD=true`, `reaction_guard.active` should be `true`;
+otherwise `why_inactive` says why.
 
 ## 6. Invite and position the bot (operator)
 

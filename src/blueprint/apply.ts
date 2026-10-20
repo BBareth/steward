@@ -3,11 +3,18 @@ import type { ChannelWriteBody, GuildSnapshot, GuildWriteBody } from '../discord
 import { assertSelfAssignable, buildPanelMessage } from '../features/role-panels.js';
 import { buildMessageBody, messageFingerprint } from '../features/messages.js';
 import type { Logger } from '../logger.js';
+import {
+  automodPatch,
+  automodRuleGone,
+  automodWriteBody,
+  deleteRuleRequest,
+  writeListedRule,
+} from '../ops/automod.js';
 import type { OpContext, OpOutcome } from '../ops/journal.js';
 import { OperationError, runOperation } from '../ops/journal.js';
-import { bucketMembers, channelPositionUpdates, rolePositionUpdates } from '../ops/ordering.js';
+import { bucketMembers, channelOrderHolds, channelPositionUpdates, roleOrderPlan } from '../ops/ordering.js';
 import type { MappingKind, Store } from '../store.js';
-import { StewardError, safeErrorMessage } from '../util/errors.js';
+import { DiscordRequestError, RefusedChange, StewardError, safeErrorMessage } from '../util/errors.js';
 import { newId } from '../util/ids.js';
 import type {
   AutoModFields,
@@ -126,6 +133,7 @@ export class PlanExecutor {
   async run(): Promise<ApplyResult> {
     let halted = false;
     let interrupted = false;
+    let refusedStep: PlanStep | null = null;
     for (const step of this.plan.steps) {
       const r = this.byStep.get(step.id)!;
       if (interrupted || this.opts.shouldStop()) {
@@ -148,20 +156,44 @@ export class PlanExecutor {
         this.persist();
         continue;
       }
+      // Plans do not record every way a deletion can rely on an earlier change
+      // (an AutoMod rule still alerting to a channel being pruned, say), so
+      // after a refusal deletions wait unless continue_on_error was asked for.
+      if (refusedStep && step.destructive && !this.opts.continueOnError) {
+        r.status = 'skipped';
+        r.error = `not run: Discord refused step ${refusedStep.id} ("${refusedStep.summary}") earlier in this run, and deletions wait until a plan applies without refusals (or set continue_on_error)`;
+        this.persist();
+        continue;
+      }
       try {
         await this.execute(step, r);
         if (r.status === 'not_started') r.status = 'succeeded';
       } catch (error) {
         r.status = error instanceof OperationError && error.outcome === 'uncertain' ? 'uncertain' : 'failed';
         r.error = safeErrorMessage(error);
-        if (error instanceof OperationError && !r.opIds.includes(error.opId)) r.opIds.push(error.opId);
+        const opId =
+          error instanceof OperationError
+            ? error.opId
+            : error instanceof RefusedChange
+              ? error.opId
+              : undefined;
+        if (opId && !r.opIds.includes(opId)) r.opIds.push(opId);
         this.deps.logger.warn('plan step failed', {
           planId: this.planId,
           stepId: step.id,
           status: r.status,
           error: r.error,
         });
-        if (!this.opts.continueOnError || r.status === 'uncertain') halted = true;
+        // A change Discord definitely refused leaves nothing half-done, so the
+        // steps that do not depend on it still run; deletions are held back.
+        const refused = error instanceof RefusedChange;
+        if (refused) {
+          refusedStep ??= step;
+          this.result.notes.push(
+            `Discord refused "${step.summary}"; steps that do not depend on it still ran${this.opts.continueOnError ? '' : ', except deletions'}`,
+          );
+        }
+        if (!refused && (!this.opts.continueOnError || r.status === 'uncertain')) halted = true;
       }
       this.persist();
     }
@@ -189,6 +221,20 @@ export class PlanExecutor {
 
   private async snapshot(): Promise<GuildSnapshot> {
     return this.deps.adapter.fetchSnapshot(this.guildId);
+  }
+
+  /** Fail the step, with what Discord now reports, if the roles did not end up in order. */
+  private async confirmRoleOrder(ids: string[]): Promise<void> {
+    const after = await this.snapshot();
+    const check = roleOrderPlan(after, ids);
+    if (check.inOrder) return;
+    const names = (list: string[]) =>
+      list.map((id) => after.roles.find((x) => x.id === id)?.name ?? id).join(' > ');
+    throw new StewardError(
+      'precondition_failed',
+      `Discord accepted the new role positions, but the roles are still out of order. Wanted ${names(ids)}; Discord now reports ${names(check.currentOrder)}` +
+        (check.blocker ? `. ${check.blocker}` : ''),
+    );
   }
 
   private overwriteBody(list: OverwriteRef[]): NonNullable<ChannelWriteBody['permission_overwrites']> {
@@ -244,22 +290,26 @@ export class PlanExecutor {
       case 'reorder_roles': {
         const snap = await this.snapshot();
         const ids = step.order.map((k) => this.lookup('role', k)).filter((id): id is string => !!id);
-        const updates = rolePositionUpdates(snap, ids);
-        if (updates.length === 0) {
+        const order = roleOrderPlan(snap, ids);
+        if (order.inOrder) {
           r.status = 'noop';
           r.note = 'roles were already in order';
           return;
         }
+        if (order.blocker)
+          throw new StewardError('precondition_failed', `cannot order the roles: ${order.blocker}`);
         this.track(
           r,
           await runOperation(ctx, {
             action: 'reorder_roles',
             resourceKind: 'role',
-            summary: `${step.summary} (${updates.length} position change(s))`,
+            summary: `${step.summary} (${order.updates.length} position change(s))`,
             idempotent: true,
-            run: (reason) => adapter.setRolePositions(g, updates, reason),
+            run: (reason) => adapter.setRolePositions(g, order.updates, reason),
           }),
         );
+        // Discord answering 200 is not proof: read the order back.
+        await this.confirmRoleOrder(ids);
         return;
       }
       case 'create_channel': {
@@ -275,7 +325,7 @@ export class PlanExecutor {
           match: { kind: 'channel', name: step.fields.name!, type: step.fields.type, parentId },
           run: (reason) => adapter.createChannel(g, body, reason),
           resultId: (c) => c.id,
-        });
+        }).catch((error: unknown) => this.explainChannelRefusal(error, step.fields.type, r));
         const id =
           out.status === 'recovered' ? out.recoveredId : out.status === 'succeeded' ? out.result.id : null;
         if (!id) throw new StewardError('internal', 'create returned no id');
@@ -376,6 +426,20 @@ export class PlanExecutor {
             run: (reason) => adapter.setChannelPositions(g, updates, reason),
           }),
         );
+        const after = await this.snapshot();
+        if (!channelOrderHolds(after, parentId, step.group, ids)) {
+          throw new StewardError(
+            'precondition_failed',
+            `Discord accepted the new channel positions, but the channels are still out of order: ${bucketMembers(
+              after,
+              parentId,
+              step.group,
+            )
+              .filter((c) => ids.includes(c.id))
+              .map((c) => c.name)
+              .join(', ')}`,
+          );
+        }
         return;
       }
       case 'update_settings': {
@@ -419,19 +483,32 @@ export class PlanExecutor {
           store.setMapping(g, 'automod', step.key, id, out.status === 'recovered' ? 'recovered' : 'created');
           this.track(r, out, id);
         } else {
-          this.track(
-            r,
-            await runOperation(ctx, {
-              action: 'update_automod',
-              resourceKind: 'automod',
-              resourceKey: step.key,
-              targetId: step.ruleId,
-              summary: step.summary,
-              idempotent: true,
-              run: (reason) => adapter.editAutoModRule(g, step.ruleId, body, reason),
-            }),
-            step.ruleId,
+          // Diff against the rule as Discord lists it now, and send only that.
+          const live = (await adapter.fetchAutoModRules(g)).find((x) => x.id === step.ruleId);
+          if (!live) throw automodRuleGone({ id: step.ruleId, name: step.fields.name });
+          const patch = automodPatch(live, body);
+          if (patch.fields.length === 0) {
+            r.status = 'noop';
+            r.note = 'the rule already matches';
+            return;
+          }
+          const write = await writeListedRule(
+            adapter,
+            g,
+            live,
+            { verb: 'change', fields: patch.fields },
+            () =>
+              runOperation(ctx, {
+                action: 'update_automod',
+                resourceKind: 'automod',
+                resourceKey: step.key,
+                targetId: step.ruleId,
+                summary: `${step.summary} (${patch.fields.join(', ')})`,
+                idempotent: true,
+                run: (reason) => adapter.editAutoModRule(g, step.ruleId, patch.body, reason),
+              }),
           );
+          this.track(r, write.out, step.ruleId);
         }
         return;
       }
@@ -528,11 +605,35 @@ export class PlanExecutor {
         await this.panel(step, r, ctx);
         return;
       }
-      case 'delete_channel':
-      case 'delete_role':
       case 'delete_automod': {
-        const kind: MappingKind =
-          step.action === 'delete_channel' ? 'channel' : step.action === 'delete_role' ? 'role' : 'automod';
+        // Discord can answer 404 for a rule it keeps itself, so a 404 on a
+        // listed rule is not "already gone", and a delete is read back.
+        const rule = (await adapter.fetchAutoModRules(g)).find((x) => x.id === step.targetId);
+        if (!rule) {
+          r.status = 'noop';
+          r.note = 'the rule was already gone';
+        } else {
+          const write = await writeListedRule(adapter, g, rule, { verb: 'delete' }, () =>
+            runOperation(ctx, {
+              action: step.action,
+              resourceKind: 'automod',
+              resourceKey: step.key,
+              targetId: step.targetId,
+              summary: step.summary,
+              idempotent: true,
+              run: (reason) => deleteRuleRequest(adapter, g, step.targetId, reason),
+            }),
+          );
+          this.track(r, write.out, step.targetId);
+          if (write.note) r.note = write.note;
+        }
+        store.deleteMappingById(g, 'automod', step.targetId);
+        if (r.status === 'not_started') r.status = 'succeeded';
+        return;
+      }
+      case 'delete_channel':
+      case 'delete_role': {
+        const kind: MappingKind = step.action === 'delete_channel' ? 'channel' : 'role';
         this.track(
           r,
           await runOperation(ctx, {
@@ -546,9 +647,7 @@ export class PlanExecutor {
             run: (reason) =>
               kind === 'channel'
                 ? adapter.deleteChannel(step.targetId, reason)
-                : kind === 'role'
-                  ? adapter.deleteRole(g, step.targetId, reason)
-                  : adapter.deleteAutoModRule(g, step.targetId, reason),
+                : adapter.deleteRole(g, step.targetId, reason),
           }),
           step.targetId,
         );
@@ -607,6 +706,48 @@ export class PlanExecutor {
     );
   }
 
+  /**
+   * Discord does not say which error it gives when a server may not have a
+   * channel type, so a refused create of a type tied to Community says so.
+   */
+  private async explainChannelRefusal(
+    error: unknown,
+    type: number | undefined,
+    r: StepResult,
+  ): Promise<never> {
+    const kind = { 5: 'announcement', 13: 'stage', 15: 'forum', 16: 'media' }[type ?? -1];
+    const refused =
+      error instanceof OperationError &&
+      error.outcome === 'failed' &&
+      error.underlying instanceof DiscordRequestError &&
+      error.underlying.kind === 'http';
+    if (!kind || !refused) throw error;
+    let features: string[];
+    try {
+      features = (await this.snapshot()).guild.features;
+    } catch {
+      throw error; // Discord's own refusal is the better report.
+    }
+    // A server that already has the feature was refused for another reason.
+    const hasFeature =
+      features.includes('COMMUNITY') || (kind === 'announcement' && features.includes('NEWS'));
+    if (hasFeature && kind !== 'media') throw error;
+    r.opIds.push(error.opId);
+    throw new StewardError(
+      'discord_error',
+      `${error.message}. ` +
+        (hasFeature
+          ? 'Discord documents media channels as still in development; this server may need access Discord grants separately'
+          : `Discord may only allow ${kind} channels on servers with the Community feature` +
+            (kind === 'announcement' ? ' (or the older NEWS feature)' : '') +
+            (kind === 'media'
+              ? ', and media channels are still in development and may need extra access'
+              : '')) +
+        `; this server has: ${features.length ? features.join(', ') : 'no features'}`,
+      { opId: error.opId, features },
+    );
+  }
+
   private async settingsBody(f: SettingsFields): Promise<GuildWriteBody> {
     const body: GuildWriteBody = {};
     const ref = (v: RefString | null | undefined) =>
@@ -643,24 +784,7 @@ export class PlanExecutor {
   }
 
   private automodBody(f: AutoModFields) {
-    return {
-      name: f.name,
-      enabled: f.enabled,
-      trigger_metadata: f.trigger_metadata,
-      actions: f.actions.map((a) => ({
-        type: a.type,
-        metadata:
-          a.type === 1
-            ? a.custom_message
-              ? { custom_message: a.custom_message }
-              : undefined
-            : a.type === 2
-              ? { channel_id: this.resolve(a.channel!, 'channel') }
-              : { duration_seconds: a.duration_seconds },
-      })),
-      exempt_roles: f.exempt_roles.map((x) => this.resolve(x, 'role')),
-      exempt_channels: f.exempt_channels.map((x) => this.resolve(x, 'channel')),
-    };
+    return automodWriteBody(f, (ref, kind) => this.resolve(ref, kind));
   }
 
   private async panel(

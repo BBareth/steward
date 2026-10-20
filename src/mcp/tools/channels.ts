@@ -11,6 +11,7 @@ import {
 import type { ChannelInfo, ChannelWriteBody, GuildSnapshot } from '../../discord/types.js';
 import { CHANNEL_TYPE_NUMBERS } from '../../discord/types.js';
 import { expandAccess } from '../../features/access.js';
+import { channelKindNeedsCommunity } from '../../features/community.js';
 import { runOperation } from '../../ops/journal.js';
 import { bucketMembers, channelGroup, channelPositionUpdates } from '../../ops/ordering.js';
 import { StewardError } from '../../util/errors.js';
@@ -201,7 +202,7 @@ export const channelTools = [
         : null;
       if (a.kind === 'category' && parent)
         throw new StewardError('invalid_argument', 'categories cannot be nested');
-      if ((a.kind === 'announcement' || a.kind === 'stage') && !s.guild.features.includes('COMMUNITY')) {
+      if (channelKindNeedsCommunity(s.guild.features, a.kind)) {
         throw new StewardError('precondition_failed', `${a.kind} channels need the Community feature`);
       }
       let overwrites = [

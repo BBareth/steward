@@ -113,8 +113,9 @@ Start it:
 docker compose up -d --build
 ```
 
-The first build takes a minute or two. Later, `docker compose up -d` pulls a
-published image if one exists and otherwise builds from this checkout.
+The first build takes a minute or two. Later, `docker compose up -d` reuses
+the image already on the host; see [Updating](#updating) for how to move to a
+newer one.
 
 ### Check it
 
@@ -156,8 +157,11 @@ The defaults are conservative. In `.env`:
 | The agent may delete channels/roles and prune with blueprints | `ALLOW_DESTRUCTIVE=true` |
 | Inspection only, no changes at all | `READ_ONLY=true` |
 | Welcome messages and join roles | `DISCORD_MEMBERS_INTENT=true` (and the portal toggle) |
+| Keep members' reactions off steward's own messages | `DISCORD_BOT_REACTION_GUARD=true` (no portal toggle; the bot needs Manage Messages) |
 
-`docker compose up -d` after editing `.env`.
+`docker compose up -d` after editing `.env`: it recreates the container with
+the new settings. `docker compose restart` does not; it restarts the old
+container with the old settings.
 
 ## 7. Connect your agent
 
@@ -251,13 +255,61 @@ secrets:
 
 ## Updating
 
+Restarting is not updating. A container runs the image it was created from,
+with the settings it was created with, until it is recreated:
+
+| Command | New code? | New `.env` settings? |
+| --- | --- | --- |
+| `docker compose restart` | No | No |
+| `docker compose up -d` | No: uses the image already on the host, pulling or building only when there is none | Yes, it recreates the container when its settings changed |
+| `docker compose pull` then `docker compose up -d` | Yes, the newest image published under the tag | Yes |
+| `docker compose up -d --build` | Yes, built from the files in this directory | Yes |
+
+**Which image.** `STEWARD_IMAGE` (default `ghcr.io/bbareth/steward:latest`)
+picks the tag. The publish workflow pushes `edge` on every push to `main`,
+`X.Y.Z` and `X.Y` for release tags, and moves `latest` only for the newest
+release, so `latest` does not exist until the first release. To follow `main`,
+set `STEWARD_IMAGE=ghcr.io/bbareth/steward:edge`; to stay put, pin `X.Y.Z`.
+A local `--build` is tagged with the same name, so it keeps being used until
+you `docker compose pull`.
+
+**From a published image:**
+
 ```bash
 cd /opt/steward
-git pull
-docker compose up -d --build
+docker compose pull
+docker compose up -d
+docker compose ps        # (healthy) after a minute
+curl -s http://127.0.0.1:8787/readyz
 ```
 
-Database migrations run automatically at startup. Check `readyz` afterwards.
+**From source.** Put the new source files in place, keeping `.env`, any
+secret files and the volume, then build. If `/opt/steward` is a git checkout,
+`git pull` does the first step; if it is a plain copy (no `.git` directory),
+copy the files over from a checkout or an archive instead, for example from
+your workstation:
+
+```bash
+# src/ exactly, so files a release removed do not linger and break the build:
+rsync -a --delete src/ host:/opt/steward/src/
+# everything else, leaving the host's own files alone:
+rsync -a --exclude .git --exclude node_modules --exclude dist --exclude src \
+  --exclude .env --exclude discord_token.txt --exclude tokens.json \
+  --exclude docker-compose.override.yml ./ host:/opt/steward/
+```
+
+then on the host:
+
+```bash
+cd /opt/steward
+docker compose up -d --build
+docker compose ps
+curl -s http://127.0.0.1:8787/readyz
+```
+
+Compare `.env` with `.env.example` after an update; new settings default to
+off. Database migrations run automatically at startup. Check `readyz`
+afterwards.
 
 ## Backups
 

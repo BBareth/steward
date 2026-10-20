@@ -1,4 +1,4 @@
-import type { Interaction } from 'discord.js';
+import type { ClientOptions, Interaction } from 'discord.js';
 import { Client, DiscordAPIError, Events, GatewayIntentBits, HTTPError, MessageFlags } from 'discord.js';
 import type {
   APIAuditLog,
@@ -13,7 +13,7 @@ import { Routes } from 'discord-api-types/v10';
 import type { Logger } from '../logger.js';
 import { redactText } from '../logger.js';
 import { DiscordRequestError, StewardError } from '../util/errors.js';
-import type { AdapterEvents, AuditLogEntry, DiscordAdapter } from './adapter.js';
+import type { AdapterEvents, AuditLogEntry, DiscordAdapter, ReactionAddEvent } from './adapter.js';
 import {
   normaliseAuditEntry,
   normaliseAutoModRule,
@@ -44,9 +44,52 @@ import type {
 export interface DiscordJsAdapterOptions {
   token: string;
   membersIntent: boolean;
+  /** Request Guild Message Reactions (not privileged) and deliver reactionAdd events. */
+  reactionIntent?: boolean;
   requestTimeoutMs: number;
   allowedGuildIds: readonly string[];
   logger: Logger;
+  /** Tests pass a stand-in for the discord.js client. */
+  clientFactory?: (options: ClientOptions) => Client;
+}
+
+const isId = (v: unknown): v is string => typeof v === 'string' && /^\d{1,20}$/.test(v);
+
+/**
+ * The parts of a raw MESSAGE_REACTION_ADD dispatch steward uses, or null for
+ * anything else. Raw packets are untyped, so every field is checked. Working
+ * from the raw event means reactions on messages discord.js never cached (all
+ * of steward's own posts, which go out over REST) are seen without partials.
+ */
+export function parseReactionAdd(
+  packet: unknown,
+): Omit<ReactionAddEvent, 'guildOwnerId' | 'botUserId'> | null {
+  const p = packet as { op?: unknown; t?: unknown; d?: Record<string, unknown> } | null;
+  if (!p || p.op !== 0 || p.t !== 'MESSAGE_REACTION_ADD' || !p.d || typeof p.d !== 'object') return null;
+  const d = p.d;
+  if (!isId(d.guild_id) || !isId(d.channel_id) || !isId(d.message_id) || !isId(d.user_id)) return null;
+  const emoji = d.emoji as { id?: unknown; name?: unknown } | undefined;
+  if (!emoji || typeof emoji !== 'object') return null;
+  const member = d.member as { roles?: unknown; user?: { bot?: unknown } } | undefined;
+  const roles = Array.isArray(member?.roles) ? member.roles.filter(isId) : null;
+  return {
+    guildId: d.guild_id,
+    channelId: d.channel_id,
+    messageId: d.message_id,
+    userId: d.user_id,
+    messageAuthorId: isId(d.message_author_id) ? d.message_author_id : null,
+    member: roles
+      ? {
+          roleIds: roles,
+          isBot: member?.user && typeof member.user === 'object' ? member.user.bot === true : null,
+        }
+      : null,
+    emoji: {
+      id: isId(emoji.id) ? emoji.id : null,
+      name: typeof emoji.name === 'string' && emoji.name ? emoji.name : null,
+    },
+    burst: d.burst === true,
+  };
 }
 
 const NETWORK_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN']);
@@ -130,11 +173,14 @@ export class DiscordJsAdapter implements DiscordAdapter {
     // only requested for welcome messages and join roles.
     const intents = [GatewayIntentBits.Guilds];
     if (this.options.membersIntent) intents.push(GatewayIntentBits.GuildMembers);
+    // Not privileged. Only for the reaction guard; message content is never needed.
+    if (this.options.reactionIntent) intents.push(GatewayIntentBits.GuildMessageReactions);
     return intents;
   }
 
   private buildClient(): Client {
-    const client = new Client({
+    const make = this.options.clientFactory ?? ((options: ClientOptions) => new Client(options));
+    const client = make({
       intents: this.intents(),
       // Retries are disabled on purpose: @discordjs/rest would otherwise replay
       // a timed-out POST, which can create a duplicate channel or role. Rate
@@ -192,7 +238,24 @@ export class DiscordJsAdapter implements DiscordAdapter {
         );
     });
     client.on(Events.InteractionCreate, (interaction) => void this.onInteraction(interaction));
+    if (this.options.reactionIntent) client.on(Events.Raw, (packet: unknown) => this.onRaw(client, packet));
     return client;
+  }
+
+  private onRaw(client: Client, packet: unknown): void {
+    const event = parseReactionAdd(packet);
+    if (!event || !this.events.reactionAdd || !this.options.allowedGuildIds.includes(event.guildId)) return;
+    this.events
+      .reactionAdd({
+        ...event,
+        guildOwnerId: client.guilds.cache.get(event.guildId)?.ownerId ?? null,
+        // Known once the session is ready. Reactions that arrive earlier are
+        // kept: REST calls are refused until then anyway.
+        botUserId: this.current.botUserId,
+      })
+      .catch((error) =>
+        this.options.logger.error('reaction handler failed', { error, guildId: event.guildId }),
+      );
   }
 
   private async onInteraction(interaction: Interaction): Promise<void> {
@@ -341,6 +404,19 @@ export class DiscordJsAdapter implements DiscordAdapter {
         normaliseAutoModRule,
       ),
     );
+  }
+
+  async fetchAutoModRule(guildId: string, ruleId: string): Promise<AutoModRuleInfo | null> {
+    const rest = this.rest();
+    try {
+      return normaliseAutoModRule(
+        (await rest.get(Routes.guildAutoModerationRule(guildId, ruleId))) as APIAutoModerationRule,
+      );
+    } catch (error) {
+      const e = toRequestError(error);
+      if (e instanceof DiscordRequestError && e.status === 404) return null;
+      throw e;
+    }
   }
 
   async fetchMessage(channelId: string, messageId: string): Promise<MessageInfo | null> {
@@ -541,6 +617,18 @@ export class DiscordJsAdapter implements DiscordAdapter {
           reason: truncateReason(reason),
         })) as APIAutoModerationRule,
       ),
+    );
+  }
+
+  async removeUserReaction(
+    channelId: string,
+    messageId: string,
+    emoji: string,
+    userId: string,
+  ): Promise<void> {
+    const rest = this.rest();
+    await this.call(() =>
+      rest.delete(Routes.channelMessageUserReaction(channelId, messageId, emoji, userId)),
     );
   }
 

@@ -3,6 +3,7 @@ import type {
   AuditLogEntry,
   ButtonPressEvent,
   DiscordAdapter,
+  ReactionAddEvent,
 } from '../../src/discord/adapter.js';
 import {
   ALL_PERMISSIONS,
@@ -53,7 +54,9 @@ export type FaultMode =
   | 'forbidden'
   | 'not_found'
   | 'hang_before'
-  | 'hang_after';
+  | 'hang_after'
+  /** Report success but change nothing, as Discord sometimes does with positions. */
+  | 'ignored';
 
 interface Fault {
   method: string;
@@ -71,6 +74,18 @@ export interface MemoryAdapterOptions {
   botPermissions?: bigint;
   /** Position of the bot's role; roles at or above it cannot be managed. */
   botRolePosition?: number;
+  /**
+   * How role positions behave. 'discord' (default) matches what live Discord
+   * was seen doing: a new role lands on position 1 without renumbering anything,
+   * so several roles can share a position, and updates are stored as sent.
+   * 'normalised' renumbers every role 1..n after each change.
+   */
+  rolePositions?: 'discord' | 'normalised';
+  /**
+   * Channel types refused without the Community feature (announcement is also
+   * allowed with NEWS). Defaults to announcement and stage.
+   */
+  communityChannelTypes?: number[];
 }
 
 export class MemoryDiscordAdapter implements DiscordAdapter {
@@ -84,6 +99,12 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
   members = new Map<string, MemberInfo>();
   messages = new Map<string, MessageInfo & { body: MessageBody }>();
   automod = new Map<string, AutoModRuleInfo>();
+  /**
+   * Rules Discord keeps for itself: listed, but edits and deletes answer 404.
+   * 'hidden' rules also answer 404 when read by id; 'returns' rules accept
+   * the delete and stay listed.
+   */
+  nativeAutomod = new Map<string, 'readable' | 'hidden' | 'returns'>();
   audit: AuditLogEntry[] = [];
   calls: Array<{ method: string; args: unknown[] }> = [];
   private nonces = new Map<string, string>();
@@ -92,7 +113,7 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
   private state: ConnectionState = 'ready';
   private detail: string | null = null;
 
-  constructor(options: MemoryAdapterOptions = {}) {
+  constructor(private readonly options: MemoryAdapterOptions = {}) {
     this.guildId = options.guildId ?? makeSnowflake();
     this.guild = {
       id: this.guildId,
@@ -225,12 +246,63 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     return member;
   }
 
+  addAutoModRule(
+    spec: Partial<AutoModRuleInfo> & { name: string },
+    native?: 'readable' | 'hidden' | 'returns',
+  ): AutoModRuleInfo {
+    const rule: AutoModRuleInfo = {
+      id: makeSnowflake(),
+      eventType: 1,
+      triggerType: 1,
+      triggerMetadata: {},
+      actions: [{ type: 1 }],
+      enabled: true,
+      exemptRoles: [],
+      exemptChannels: [],
+      creatorId: this.ownerId,
+      ...spec,
+    };
+    this.automod.set(rule.id, rule);
+    if (native) this.nativeAutomod.set(rule.id, native);
+    return rule;
+  }
+
   setBotRolePosition(position: number): void {
     this.roles.get(this.botRoleId)!.position = position;
   }
 
   setBotPermissions(perms: bigint): void {
     this.roles.get(this.botRoleId)!.permissions = perms;
+  }
+
+  /** Reactions per message, as `${encoded emoji}|${userId}`. */
+  reactions = new Map<string, Set<string>>();
+
+  /** Deliver a reaction the way the gateway would; `overrides` can drop fields Discord marks optional. */
+  async emitReactionAdd(
+    messageId: string,
+    userId: string,
+    emoji: { id: string | null; name: string | null },
+    overrides: Partial<ReactionAddEvent> = {},
+  ): Promise<void> {
+    const msg = this.messages.get(messageId)!;
+    const member = this.members.get(userId);
+    const segment = encodeURIComponent(emoji.id ? `${emoji.name}:${emoji.id}` : (emoji.name ?? ''));
+    if (!this.reactions.has(messageId)) this.reactions.set(messageId, new Set());
+    this.reactions.get(messageId)!.add(`${segment}|${userId}`);
+    await this.events.reactionAdd?.({
+      guildId: this.guildId,
+      channelId: msg.channelId,
+      messageId,
+      userId,
+      messageAuthorId: msg.authorId,
+      member: member ? { roleIds: [...member.roleIds], isBot: member.isBot } : null,
+      emoji,
+      burst: false,
+      guildOwnerId: this.ownerId,
+      botUserId: this.botUserId,
+      ...overrides,
+    });
   }
 
   async emitMemberJoin(member: MemberInfo): Promise<void> {
@@ -323,6 +395,17 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
       throw new DiscordRequestError('server', 'Discord returned HTTP 502; the outcome is unknown', 502);
     if (mode === 'hang_after') await new Promise(() => {});
     return value;
+  }
+
+  private needsCommunity(type: number): boolean {
+    const f = this.guild.features;
+    if (f.includes('COMMUNITY') || (type === 5 && f.includes('NEWS'))) return false;
+    return (this.options.communityChannelTypes ?? [5, 13]).includes(type);
+  }
+
+  /** Discord documents no JSON code for an unknown AutoMod rule, only the HTTP status. */
+  private notFound(): DiscordRequestError {
+    return new DiscordRequestError('http', 'Discord rejected the request: 404 Not Found', 404);
   }
 
   private forbid(why: string): never {
@@ -449,6 +532,14 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     return [...this.automod.values()].map(clone);
   }
 
+  async fetchAutoModRule(guildId: string, ruleId: string): Promise<AutoModRuleInfo | null> {
+    await this.enter('fetchAutoModRule', [guildId, ruleId]);
+    this.requireGuildPerm(P.ManageGuild, 'automod needs Manage Server');
+    const rule = this.automod.get(ruleId);
+    if (!rule || this.nativeAutomod.get(ruleId) === 'hidden') return null;
+    return clone(rule);
+  }
+
   async fetchMessage(channelId: string, messageId: string): Promise<MessageInfo | null> {
     await this.enter('fetchMessage', [channelId, messageId]);
     const m = this.messages.get(messageId);
@@ -480,7 +571,7 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     this.requireGuildPerm(P.ManageChannels, 'creating channels needs Manage Channels');
     this.checkOverwriteBits(body, body.parent_id ? (this.channels.get(body.parent_id) ?? null) : null);
     const type = body.type ?? 0;
-    if ((type === 5 || type === 13) && !this.guild.features.includes('COMMUNITY')) {
+    if (this.needsCommunity(type)) {
       throw new DiscordRequestError(
         'http',
         'Discord rejected the request: Invalid Form Body (type requires Community)',
@@ -505,7 +596,7 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     const channel = this.requireChannel(channelId);
     if (!has(botChannelPermissions(this.snapshotNow(), channel), P.ManageChannels))
       this.forbid('editing needs Manage Channels');
-    if ((body.type === 5 || body.type === 13) && !this.guild.features.includes('COMMUNITY')) {
+    if (body.type !== undefined && this.needsCommunity(body.type)) {
       throw new DiscordRequestError(
         'http',
         'Discord rejected the request: Invalid Form Body (type requires Community)',
@@ -541,7 +632,7 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
   async setChannelPositions(guildId: string, updates: PositionUpdate[], reason: string): Promise<void> {
     const mode = await this.enter('setChannelPositions', [guildId, updates, reason]);
     this.requireGuildPerm(P.ManageChannels, 'reordering needs Manage Channels');
-    for (const u of updates) this.requireChannel(u.id).position = u.position;
+    if (mode !== 'ignored') for (const u of updates) this.requireChannel(u.id).position = u.position;
     return this.leave(mode, undefined);
   }
 
@@ -582,7 +673,9 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     const perms = body.permissions !== undefined ? BigInt(body.permissions) : 0n;
     if (!bot.isAdmin && (perms & ~bot.permissions) !== 0n)
       this.forbid('cannot grant permissions the bot does not hold');
-    for (const r of this.roles.values()) if (r.id !== this.guildId && r.position >= 1) r.position += 1;
+    if (this.options.rolePositions === 'normalised') {
+      for (const r of this.roles.values()) if (r.id !== this.guildId && r.position >= 1) r.position += 1;
+    }
     const role: RoleInfo = {
       id: makeSnowflake(),
       name: body.name ?? 'new role',
@@ -628,7 +721,7 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     this.roles.delete(roleId);
     for (const m of this.members.values()) m.roleIds = m.roleIds.filter((id) => id !== roleId);
     for (const c of this.channels.values()) c.overwrites = c.overwrites.filter((o) => o.id !== roleId);
-    this.normaliseRolePositions();
+    if (this.options.rolePositions === 'normalised') this.normaliseRolePositions();
     this.audit_(32, roleId, reason);
     return this.leave(mode, undefined);
   }
@@ -641,10 +734,13 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
       const role = this.requireRole(u.id);
       const verdict = canBotManageRole(snap, role, 'move');
       if (!verdict.ok) this.forbid(verdict.reason!);
-      if (u.position >= bot.highestPosition) this.forbid('cannot move a role to or above the bot');
+      if (!bot.highestRole || u.position >= bot.highestRole.position) {
+        this.forbid('cannot move a role to or above the bot');
+      }
     }
+    if (mode === 'ignored') return this.leave(mode, undefined);
     for (const u of updates) this.requireRole(u.id).position = u.position;
-    this.normaliseRolePositions();
+    if (this.options.rolePositions === 'normalised') this.normaliseRolePositions();
     return this.leave(mode, undefined);
   }
 
@@ -694,6 +790,9 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     if (body.premium_progress_bar_enabled !== undefined)
       g.premiumProgressBarEnabled = body.premium_progress_bar_enabled;
     if (body.features !== undefined) {
+      if (body.features.includes('COMMUNITY') !== g.features.includes('COMMUNITY')) {
+        if (!botStanding(this.snapshotNow()).isAdmin) this.forbid('changing Community needs Administrator');
+      }
       if (body.features.includes('COMMUNITY') && (!g.rulesChannelId || !g.publicUpdatesChannelId)) {
         throw new DiscordRequestError(
           'http',
@@ -765,6 +864,23 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     return this.leave(mode, undefined);
   }
 
+  async removeUserReaction(
+    channelId: string,
+    messageId: string,
+    emoji: string,
+    userId: string,
+  ): Promise<void> {
+    const mode = await this.enter('removeUserReaction', [channelId, messageId, emoji, userId]);
+    const msg = this.messages.get(messageId);
+    if (!msg || msg.channelId !== channelId) {
+      throw new DiscordRequestError('http', 'Discord rejected the request: Unknown Message', 404, 10008);
+    }
+    const perms = botChannelPermissions(this.snapshotNow(), this.requireChannel(channelId));
+    if (!has(perms, P.ManageMessages)) this.forbid("removing others' reactions needs Manage Messages");
+    this.reactions.get(messageId)?.delete(`${emoji}|${userId}`);
+    return this.leave(mode, undefined);
+  }
+
   async createAutoModRule(guildId: string, body: AutoModWriteBody, reason: string): Promise<AutoModRuleInfo> {
     const mode = await this.enter('createAutoModRule', [guildId, body, reason]);
     this.requireGuildPerm(P.ManageGuild, 'automod needs Manage Server');
@@ -794,13 +910,8 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     const mode = await this.enter('editAutoModRule', [guildId, ruleId, body, reason]);
     this.requireGuildPerm(P.ManageGuild, 'automod needs Manage Server');
     const rule = this.automod.get(ruleId);
-    if (!rule)
-      throw new DiscordRequestError(
-        'http',
-        'Discord rejected the request: Unknown Auto Moderation Rule',
-        404,
-        10066,
-      );
+    if (!rule || (this.nativeAutomod.has(ruleId) && this.nativeAutomod.get(ruleId) !== 'returns'))
+      throw this.notFound();
     if (body.name !== undefined) rule.name = body.name;
     if (body.event_type !== undefined) rule.eventType = body.event_type;
     if (body.trigger_metadata !== undefined) rule.triggerMetadata = clone(body.trigger_metadata);
@@ -814,14 +925,9 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
   async deleteAutoModRule(guildId: string, ruleId: string, reason: string): Promise<void> {
     const mode = await this.enter('deleteAutoModRule', [guildId, ruleId, reason]);
     this.requireGuildPerm(P.ManageGuild, 'automod needs Manage Server');
-    if (!this.automod.delete(ruleId)) {
-      throw new DiscordRequestError(
-        'http',
-        'Discord rejected the request: Unknown Auto Moderation Rule',
-        404,
-        10066,
-      );
-    }
+    const native = this.nativeAutomod.get(ruleId);
+    if (native === 'returns' && this.automod.has(ruleId)) return this.leave(mode, undefined);
+    if (native || !this.automod.delete(ruleId)) throw this.notFound();
     return this.leave(mode, undefined);
   }
 

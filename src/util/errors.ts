@@ -27,6 +27,22 @@ export class StewardError extends Error {
   }
 }
 
+/**
+ * Discord definitely refused a change, so nothing was applied. An apply run
+ * reports the step as failed and carries on with steps that do not depend on it.
+ */
+export class RefusedChange extends StewardError {
+  constructor(
+    message: string,
+    details?: unknown,
+    /** The journalled operation Discord refused, if a request was sent. */
+    readonly opId?: string,
+  ) {
+    super('precondition_failed', message, details);
+    this.name = 'RefusedChange';
+  }
+}
+
 /** Kind of failure reported by the Discord adapter. */
 export type DiscordFailureKind = 'http' | 'timeout' | 'server' | 'network' | 'rate_limited';
 
@@ -68,7 +84,6 @@ export const DiscordCodes = {
   UnknownMessage: 10008,
   UnknownOverwrite: 10009,
   UnknownRole: 10011,
-  UnknownAutoModRule: 10066,
   MissingAccess: 50001,
   MissingPermissions: 50013,
   InvalidFormBody: 50035,

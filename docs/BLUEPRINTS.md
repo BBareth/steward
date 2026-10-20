@@ -69,7 +69,7 @@ separate, explicit choice on the plan:
 | `overwrites` | Overwrites on managed channels for roles/members the blueprint does not list |
 | `messages` | Managed messages no longer listed |
 | `panels` | Role panels no longer listed |
-| `automod` | AutoMod rules no longer listed |
+| `automod` | AutoMod rules no longer listed that steward created; bound or exported rules someone else made need `prune_unmanaged` |
 
 `prune_unmanaged: true` extends pruning to resources steward never managed —
 everything in the server the blueprint does not mention. `@everyone`,
@@ -165,7 +165,7 @@ Channel fields:
 | Field | Applies to | Notes |
 | --- | --- | --- |
 | `key`, `name` | all | Text-like channel names must already be in Discord's form: lower case, no spaces (`general-chat`). |
-| `type` | all | `text` (default), `voice`, `announcement`, `stage`, `forum`, `media`. Announcement and stage need the Community feature. |
+| `type` | all | `text` (default), `voice`, `announcement`, `stage`, `forum`, `media`. Announcement, stage and media need the Community feature (announcement also works with the older NEWS feature); forum may, see below. |
 | `topic` | text, announcement, forum, media, stage | |
 | `nsfw` | all | |
 | `slowmode_seconds` | all text chats | 0-21600 |
@@ -239,9 +239,20 @@ settings:
 
 Every field is optional. `community: true` needs `rules_channel`,
 `public_updates_channel`, verification `low` or higher and
-`explicit_content_filter: all_members`; steward creates the referenced channels
-first, enables Community, then creates any announcement and stage channels.
-Server icon, banner and other image settings are not managed.
+`explicit_content_filter: all_members` (checked against the values the server
+will have), and the bot needs Administrator to turn Community on or off.
+steward creates the rules and updates channels first, enables Community, then
+creates the announcement, stage, forum and media channels. Settings channels
+must be text channels that exist before Community is on; the plan blocks a
+settings channel that would only be created afterwards.
+
+Forum channels launched for Community servers, and Discord's docs no longer
+say whether that still applies, so steward plans them on any server with a
+warning. Media channels need Community and are still documented as in
+development, so Community alone may not be enough. If Discord refuses one of
+these types, the failed step says which feature it may need and lists the
+server's features. Server icon, banner and other image settings are not
+managed.
 
 ### Messages
 
@@ -326,10 +337,23 @@ automod:
 
 Triggers: `keyword` (`keywords`, `regex_patterns`, `allow_list`), `spam`,
 `keyword_preset` (`presets`: `profanity`, `sexual_content`, `slurs`;
-`allow_list`), `mention_spam` (`mention_total_limit`, `raid_protection`).
-Discord allows six keyword rules and one of each other kind per server,
-counting rules steward does not manage. A rule cannot change its trigger type;
-the plan reports that as unsupported. Member-profile rules are not supported.
+`allow_list`), `mention_spam` (`mention_total_limit`, `raid_protection`;
+leave out `mention_total_limit` to keep the server's current limit, but a new
+rule needs it). Discord allows six keyword rules and one of each other kind
+per server, counting rules steward does not manage. A rule cannot change its
+trigger type; the plan reports that as unsupported. Member-profile rules are
+not supported.
+
+Updates send only the fields that differ from the live rule. Actions a
+blueprint cannot describe (newer Discord action types) are kept as they are,
+and the plan warns about them. Some rules are kept by Discord itself: they are
+listed, but Discord can answer 404 Not Found when a bot changes or deletes
+them. steward then fails that step with what it found (still listed, readable
+by id or not), never deletes or recreates the rule, and runs the steps that
+do not depend on it, except deletions, which wait for a run without refusals
+unless `continue_on_error` is set. A delete is read back, so one Discord
+accepts but does not carry out is reported too. Change such a rule in the server's AutoMod
+settings in Discord, or make the blueprint match it.
 
 ## Plans in detail
 

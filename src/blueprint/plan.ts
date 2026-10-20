@@ -36,7 +36,10 @@ import type { AutoModRuleInfo, ChannelInfo, ChannelKind, GuildSnapshot, RoleInfo
 import { CHANNEL_TYPE_NUMBERS } from '../discord/types.js';
 import type { OverwriteSpec } from '../features/access.js';
 import { expandAccess, mergeOverwrites } from '../features/access.js';
+import { channelKindNeedsCommunity, waitsForCommunity } from '../features/community.js';
 import { buildMessageBody, parseColor } from '../features/messages.js';
+import { automodPatch, automodWriteBody, unmodelledActions } from '../ops/automod.js';
+import { roleOrderPlan } from '../ops/ordering.js';
 import type { ManagedMessage, Mapping, MappingKind, RolePanel, WelcomeConfig } from '../store.js';
 import { StewardError } from '../util/errors.js';
 import { hashValue, stableStringify } from '../util/hash.js';
@@ -58,7 +61,6 @@ export interface PlannerInput {
 }
 
 const TEXT_GROUP = new Set<ChannelKind>(['text', 'announcement', 'forum', 'media']);
-const COMMUNITY_TYPES = new Set(['announcement', 'stage']);
 const BITRATE_LIMITS = [96000, 128000, 256000, 384000];
 
 const groupOf = (kind: ChannelKind | string): 'category' | 'text' | 'voice' =>
@@ -119,6 +121,8 @@ class Planner {
   private settingsStepId: string | null = null;
   private selfRolesStepId: string | null = null;
   private readonly communityEnabled: boolean;
+  /** Turning Community on is part of this plan. */
+  private readonly enablingCommunity: boolean;
 
   constructor(private readonly input: PlannerInput) {
     this.bp = input.blueprint;
@@ -130,6 +134,7 @@ class Planner {
       this.mappedIds.add(`${m.kind}:${m.discordId}`);
     }
     this.communityEnabled = this.snap.guild.features.includes('COMMUNITY');
+    this.enablingCommunity = !this.communityEnabled && this.bp.settings?.community === true;
     for (const cat of this.bp.categories) {
       this.entries.push({
         key: cat.key,
@@ -574,11 +579,26 @@ class Planner {
       else this.warn('role_not_movable', `role "${r.key}" will keep its position: ${verdict.reason}`, r.key);
     }
     if (movable.length < 2) return;
-    const existing = movable.map((k) => this.ids.role.get(k)).filter((id): id is string => !!id);
-    const current = rolesTopDown(this.snap)
-      .map((r) => r.id)
-      .filter((id) => existing.includes(id));
-    if (!anyNew && stableStringify(current) === stableStringify(existing)) return;
+    // The executor and verify use this same calculation, so "needs reordering"
+    // here and "already in order" there can never disagree.
+    let blocked: string | undefined;
+    if (!anyNew) {
+      const existing = movable.map((k) => this.ids.role.get(k)!);
+      const order = roleOrderPlan(this.snap, existing);
+      if (order.inOrder) return;
+      if (order.blocker) blocked = `cannot order the roles: ${order.blocker}`;
+    } else {
+      // New roles do not exist yet. Discord adds them at the bottom of the list,
+      // so rehearse with stand-ins there and warn if the order looks out of reach.
+      const rehearsal = this.withNewRoleStandIns(movable);
+      const order = roleOrderPlan(rehearsal.snapshot, rehearsal.ids);
+      if (order.blocker) {
+        this.warn(
+          'role_order_at_risk',
+          `once the new roles exist, ordering them may be blocked: ${order.blocker}. The apply step will check again and report it rather than claim success`,
+        );
+      }
+    }
     const { dependsOn } = this.deps(movable.map((k) => ({ ref: `key:${k}`, kind: 'role' as const })));
     this.add({
       action: 'reorder_roles',
@@ -586,8 +606,31 @@ class Planner {
       summary: `order roles top to bottom: ${movable.join(' > ')}`,
       destructive: false,
       dependsOn,
-      blocked: has(this.bot.permissions, P.ManageRoles) ? undefined : 'the bot lacks Manage Roles',
+      blocked: has(this.bot.permissions, P.ManageRoles) ? blocked : 'the bot lacks Manage Roles',
     });
+  }
+
+  /** A copy of the snapshot with stand-ins for roles the plan creates, at the bottom of the list. */
+  private withNewRoleStandIns(keys: string[]): { snapshot: GuildSnapshot; ids: string[] } {
+    let next = this.snap.roles.reduce((max, r) => (BigInt(r.id) > max ? BigInt(r.id) : max), 0n);
+    const roles = [...this.snap.roles];
+    const ids = keys.map((k) => {
+      const id = this.ids.role.get(k);
+      if (id) return id;
+      next += 1n;
+      const standIn = {
+        ...roles[0]!,
+        id: next.toString(),
+        name: k,
+        position: 1,
+        managed: false,
+        permissions: 0n,
+        tags: null,
+      };
+      roles.push(standIn);
+      return standIn.id;
+    });
+    return { snapshot: { ...this.snap, roles }, ids };
   }
 
   // ---- channels -----------------------------------------------------------------
@@ -700,12 +743,15 @@ class Planner {
       if ((phase === 'category') !== (e.kind === 'category')) continue;
       if (!this.ids.channel.has(e.key)) continue;
       const id = this.ids.channel.get(e.key)!;
-      const needsCommunity = COMMUNITY_TYPES.has(e.kind) && !this.communityEnabled;
-      const enablingCommunity = this.bp.settings?.community === true;
-      // Creating an announcement/stage channel, or converting a text channel
-      // into one, has to wait until the settings step has turned Community on.
+      const needsCommunity = channelKindNeedsCommunity(this.snap.guild.features, e.kind);
+      const enablingCommunity = this.enablingCommunity;
+      // Creating a channel of a type tied to Community, or converting a text
+      // channel into one, waits until the settings step has turned Community on.
       const converting = id !== null && e.kind !== 'category' && this.channel(id)?.kind !== e.kind;
-      const afterSettings = needsCommunity && enablingCommunity && (id === null || converting);
+      const afterSettings =
+        waitsForCommunity(this.snap.guild.features, e.kind) &&
+        enablingCommunity &&
+        (id === null || converting);
       if (phase === 'channel' && afterSettings) continue;
       if (phase === 'community' && !afterSettings) continue;
       const settingsDep = phase === 'community' && this.settingsStepId ? [this.settingsStepId] : [];
@@ -727,6 +773,20 @@ class Planner {
             ref: e.key,
           });
           continue;
+        }
+        if (e.kind === 'forum' && !this.communityEnabled && !enablingCommunity) {
+          this.warn(
+            'community_may_be_needed',
+            `forum channel "${e.key}" is created on a server without the Community feature. Discord launched forum channels for Community servers and no longer documents whether that applies; if Discord refuses, set settings.community: true or use a text channel`,
+            e.key,
+          );
+        }
+        if (e.kind === 'media') {
+          this.warn(
+            'media_channel_beta',
+            `media channel "${e.key}": Discord documents media channels as still in development, and Community alone may not be enough to create one`,
+            e.key,
+          );
         }
         const tier = this.snap.guild.premiumTier;
         const bitrateLimit = BITRATE_LIMITS[tier] ?? 96000;
@@ -779,7 +839,7 @@ class Planner {
           (ch.kind === 'text' && e.kind === 'announcement') ||
           (ch.kind === 'announcement' && e.kind === 'text')
         ) {
-          if (this.communityEnabled || enablingCommunity) {
+          if (!channelKindNeedsCommunity(this.snap.guild.features, 'announcement') || enablingCommunity) {
             changes.push({ field: 'type', from: ch.kind, to: e.kind });
             changed.type = CHANNEL_TYPE_NUMBERS[e.kind as keyof typeof CHANNEL_TYPE_NUMBERS];
           } else {
@@ -1066,7 +1126,44 @@ class Planner {
       this.unchanged++;
       return;
     }
-    const { dependsOn, blocked } = this.deps(refs);
+    const deps = this.deps(refs);
+    const { dependsOn } = deps;
+    let blocked = deps.blocked;
+    if (this.enablingCommunity) {
+      // The settings step cannot point at a channel that is only created once
+      // the same step has turned Community on.
+      for (const field of [
+        'rules_channel',
+        'public_updates_channel',
+        'system_channel',
+        'safety_alerts_channel',
+        'afk_channel',
+      ] as const) {
+        const value = s[field];
+        const key = value ? refKey(channelRef(value)) : null;
+        const entry = key ? this.entries.find((x) => x.key === key) : undefined;
+        if (
+          entry &&
+          this.ids.channel.get(entry.key) === null &&
+          waitsForCommunity(this.snap.guild.features, entry.kind)
+        ) {
+          blocked ??= `settings.${field} is "${entry.key}", a ${entry.kind} channel that can only be created once Community is on; point it at a text channel`;
+        }
+      }
+      // Requirements from Discord's guide to enabling Community; the API
+      // reference does not list them, so they are checked on the values the
+      // server will have after this step.
+      const verification = fields.verification_level ?? g.verificationLevel;
+      const filter = fields.explicit_content_filter ?? g.explicitContentFilter;
+      if (verification < 1)
+        blocked ??= 'Community needs verification level "low" or higher; set settings.verification_level';
+      else if (filter !== 2)
+        blocked ??=
+          'Community needs the content filter to scan all members; set settings.explicit_content_filter: all_members';
+    }
+    if (fields.community !== undefined && !this.bot.isAdmin) {
+      blocked ??= 'Discord requires Administrator to turn Community on or off';
+    }
     this.settingsStepId = this.add({
       action: 'update_settings',
       fields,
@@ -1127,62 +1224,24 @@ class Planner {
     };
   }
 
-  /** Comparable form of a rule; refs that point at not-yet-created resources never compare equal. */
-  private automodComparable(f: AutoModFields): string | null {
+  /** What Discord would receive, or null while a referenced role or channel does not exist yet. */
+  private automodWant(f: AutoModFields) {
     let unresolved = false;
-    const r = (ref: RefString, kind: MappingKind) => {
+    const body = automodWriteBody(f, (ref, kind) => {
       const id = this.resolve(ref, kind);
       if (!id) unresolved = true;
-      return id ?? '?';
-    };
-    const sorted = (v: unknown) => (Array.isArray(v) ? [...v].map(String).sort() : v);
-    const meta: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(f.trigger_metadata)) {
-      if (Array.isArray(v) && v.length === 0) continue;
-      meta[k] = sorted(v);
-    }
-    const value = {
-      name: f.name,
-      enabled: f.enabled,
-      trigger_type: f.trigger_type,
-      meta,
-      actions: f.actions.map((a) => ({
-        type: a.type,
-        channel: a.channel ? r(a.channel, 'channel') : undefined,
-        duration_seconds: a.duration_seconds,
-        custom_message: a.custom_message,
-      })),
-      exempt_roles: f.exempt_roles.map((x) => r(x, 'role')).sort(),
-      exempt_channels: f.exempt_channels.map((x) => r(x, 'channel')).sort(),
-    };
-    return unresolved ? null : stableStringify(value);
+      return id ?? '';
+    });
+    return unresolved ? null : body;
   }
 
-  private ruleComparable(rule: AutoModRuleInfo): string {
-    const sorted = (v: unknown) => (Array.isArray(v) ? [...v].map(String).sort() : v);
-    const meta: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(rule.triggerMetadata)) {
-      if (v === undefined || (Array.isArray(v) && v.length === 0)) continue;
-      if (rule.triggerType === 5 && k === 'mention_raid_protection_enabled' && v === false) {
-        meta[k] = false;
-        continue;
-      }
-      meta[k] = sorted(v);
-    }
-    return stableStringify({
-      name: rule.name,
-      enabled: rule.enabled,
-      trigger_type: rule.triggerType,
-      meta,
-      actions: rule.actions.map((a) => ({
-        type: a.type,
-        channel: a.metadata?.channel_id,
-        duration_seconds: a.metadata?.duration_seconds,
-        custom_message: a.metadata?.custom_message || undefined,
-      })),
-      exempt_roles: [...rule.exemptRoles].sort(),
-      exempt_channels: [...rule.exemptChannels].sort(),
-    });
+  private automodLimitReason(type: string, triggerType: number, limit: number, rules: AutoModRuleInfo[]) {
+    const existing = rules.filter((r) => r.triggerType === triggerType).map((r) => `"${r.name}"`);
+    return (
+      `the server already has the maximum number of ${type} rules (${limit}): ${existing.join(', ')}. ` +
+      'To manage an existing rule, give the blueprint entry the same name (or bind it with map_resource) instead of creating another; ' +
+      'rules Discord keeps for itself may not be removable'
+    );
   }
 
   private planAutomod() {
@@ -1218,9 +1277,16 @@ class Planner {
             blocked ??
             (!canManage
               ? 'AutoMod needs Manage Server'
-              : over
-                ? `the server already has the maximum number of ${a.trigger.type} rules (${limits[fields.trigger_type]}); prune or remove one first`
-                : undefined),
+              : a.trigger.type === 'mention_spam' && a.trigger.mention_total_limit === undefined
+                ? 'a new mention_spam rule needs mention_total_limit'
+                : over
+                  ? this.automodLimitReason(
+                      a.trigger.type,
+                      fields.trigger_type,
+                      limits[fields.trigger_type]!,
+                      rules,
+                    )
+                  : undefined),
         });
         this.creators.automod.set(a.key, stepId);
         continue;
@@ -1234,18 +1300,33 @@ class Planner {
         });
         continue;
       }
-      const want = this.automodComparable(fields);
-      if (want !== null && want === this.ruleComparable(rule)) {
+      const extra = unmodelledActions(rule);
+      if (extra.length > 0) {
+        this.warn(
+          'automod_unmodelled',
+          `AutoMod rule "${rule.name}" has ${extra.length} action(s) steward does not model (type ${[...new Set(extra.map((x) => x.type))].join(', ')}); updates keep them as they are`,
+          a.key,
+        );
+      }
+      // The same diff the executor sends, so plan, apply and verify agree.
+      const want = this.automodWant(fields);
+      const patch = want ? automodPatch(rule, want) : null;
+      if (patch && patch.fields.length === 0) {
         this.unchanged++;
         continue;
       }
+      const changed = patch?.fields ?? ['rule'];
       this.add({
         action: 'update_automod',
         key: a.key,
         ruleId: id,
         fields,
-        changes: [{ field: 'rule', from: rule.name, to: a.name }],
-        summary: `update AutoMod rule "${rule.name}"`,
+        changes: changed.map((field) =>
+          field === 'name' || field === 'enabled'
+            ? { field, from: rule[field], to: fields[field] }
+            : { field, from: 'current', to: 'blueprint' },
+        ),
+        summary: `update AutoMod rule "${rule.name}": ${changed.join(', ')}`,
         destructive: false,
         dependsOn,
         blocked: blocked ?? (canManage ? undefined : 'AutoMod needs Manage Server'),
@@ -1547,14 +1628,29 @@ class Planner {
     if (prune.automod && this.input.automodRules) {
       for (const r of this.input.automodRules) {
         if (inBlueprint('automod', r.id)) continue;
-        const key = mappedKey('automod', r.id);
-        if (!key && !prune_unmanaged) continue;
+        const mapping = this.input.mappings.find((m) => m.kind === 'automod' && m.discordId === r.id);
+        const key = mapping?.key ?? null;
+        // Only rules steward made count as its own here. An exported or bound
+        // rule may be one the server or Discord set up, such as a built-in
+        // protection, so it needs prune_unmanaged like any unmanaged rule.
+        const ours =
+          mapping?.source === 'created' || mapping?.source === 'recovered' || r.creatorId === this.bot.userId;
+        if (!ours && !prune_unmanaged) {
+          if (key) {
+            this.warn(
+              'automod_not_pruned',
+              `AutoMod rule "${r.name}" is bound to "${key}" but steward did not create it, so it is only pruned with prune_unmanaged`,
+              key,
+            );
+          }
+          continue;
+        }
         this.add({
           action: 'delete_automod',
           key,
           targetId: r.id,
           name: r.name,
-          summary: `delete AutoMod rule "${r.name}"${key ? '' : ' (not managed by steward)'}`,
+          summary: `delete AutoMod rule "${r.name}"${ours ? '' : ' (not created by steward)'}`,
           destructive: true,
           dependsOn: [],
           blocked: has(this.bot.permissions, P.ManageGuild) ? undefined : 'AutoMod needs Manage Server',

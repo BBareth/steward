@@ -212,7 +212,8 @@ export const automodSchema = z
       z
         .object({
           type: z.literal('mention_spam'),
-          mention_total_limit: z.number().int().min(1).max(50),
+          /** Omit to leave the server's current limit alone; needed when steward creates the rule. */
+          mention_total_limit: z.number().int().min(1).max(50).optional(),
           raid_protection: z.boolean().default(false),
         })
         .strict(),

@@ -47,6 +47,8 @@ describe('configuration', () => {
     expect(c.allowDestructive).toBe(false);
     expect(c.readOnly).toBe(false);
     expect(c.membersIntent).toBe(false);
+    expect(c.reactionGuard).toBe(false);
+    expect(loadConfig({ ...base, DISCORD_BOT_REACTION_GUARD: 'true' }).reactionGuard).toBe(true);
     expect(c.credentials).toHaveLength(1);
     expect(c.credentials[0]!.sha256).toBe(sha256(TOKEN));
     expect([...c.credentials[0]!.scopes].sort()).toEqual(['destructive', 'read', 'write']);

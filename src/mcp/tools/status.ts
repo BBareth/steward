@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { BLUEPRINT_REFERENCE } from '../../blueprint/reference.js';
 import { P, PERMISSION_BITS, permissionNames, permissionsFromNames } from '../../discord/permissions.js';
+import { REACTION_GUARD_EXEMPT_KEYS } from '../../features/reaction-guard.js';
 import { StewardError } from '../../util/errors.js';
 import { VERSION } from '../../version.js';
 import { defineTool } from '../registry.js';
@@ -44,11 +45,11 @@ export const statusTools = [
     name: 'steward_status',
     title: 'Service status',
     description:
-      "Discord connection state, the guilds steward may manage, server modes (read-only, destructive allowed, members intent), and your credential's scopes. Call this first.",
+      "Discord connection state, the guilds steward may manage, server modes (read-only, destructive allowed, members intent, reaction guard), and your credential's scopes. Call this first.",
     scope: 'read',
     input: z.object({}),
     handler: async (_a, call) => {
-      const { config, adapter } = call.app;
+      const { config, adapter, reactionGuard: guard } = call.app;
       const st = adapter.status();
       return {
         version: VERSION,
@@ -58,7 +59,11 @@ export const statusTools = [
           since: st.since,
           detail: st.detail,
           bot: st.botUserId ? { id: st.botUserId, tag: st.botTag, application_id: st.applicationId } : null,
-          gateway_intents: ['Guilds', ...(config.membersIntent ? ['GuildMembers (privileged)'] : [])],
+          gateway_intents: [
+            'Guilds',
+            ...(config.membersIntent ? ['GuildMembers (privileged)'] : []),
+            ...(guard?.active ? ['GuildMessageReactions'] : []),
+          ],
         },
         guilds: config.guildIds.map((id) => ({
           id,
@@ -69,6 +74,21 @@ export const statusTools = [
           read_only: config.readOnly,
           destructive_tools: config.allowDestructive && !config.readOnly,
           welcome_and_join_roles: config.membersIntent,
+          reaction_guard: guard?.active ?? false,
+        },
+        reaction_guard: {
+          configured: config.reactionGuard,
+          active: guard?.active ?? false,
+          why_inactive: !config.reactionGuard
+            ? 'DISCORD_BOT_REACTION_GUARD is not set'
+            : config.readOnly
+              ? 'READ_ONLY is on'
+              : null,
+          removes: "ordinary members' reactions on messages steward itself posted, in the configured guilds",
+          keeps: `bots, the server owner, and members with a role bound to ${REACTION_GUARD_EXEMPT_KEYS.join(', ')}`,
+          needs: 'Manage Messages in the channels steward posts in',
+          // Only what happened in the guilds this credential may see.
+          ...(guard?.active ? guard.report(call.caller.guilds) : {}),
         },
         you: { client: call.caller.clientId, scopes: [...call.caller.scopes] },
         workflow:

@@ -164,7 +164,13 @@ export interface MessageInfo {
 
 export interface AutoModAction {
   type: number;
-  metadata?: { channel_id?: string; duration_seconds?: number; custom_message?: string };
+  /** Keys steward does not model are kept, so they can be sent back unchanged. */
+  metadata?: {
+    channel_id?: string;
+    duration_seconds?: number;
+    custom_message?: string;
+    [key: string]: unknown;
+  };
 }
 
 export interface AutoModRuleInfo {
@@ -179,6 +185,8 @@ export interface AutoModRuleInfo {
     allow_list?: string[];
     mention_total_limit?: number;
     mention_raid_protection_enabled?: boolean;
+    /** Keys steward does not model are kept, so they can be sent back unchanged. */
+    [key: string]: unknown;
   };
   actions: AutoModAction[];
   enabled: boolean;

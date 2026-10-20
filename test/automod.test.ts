@@ -30,7 +30,7 @@ type Exported = {
 };
 
 /** A mention-spam rule like the one Discord adds, plus an action type steward does not model. */
-function kept(e: TestEnv, readable: 'readable' | 'hidden' = 'readable'): AutoModRuleInfo {
+function kept(e: TestEnv, readable: 'readable' | 'hidden' | 'returns' = 'readable'): AutoModRuleInfo {
   return e.adapter.addAutoModRule(
     {
       name: 'Server mention guard',
@@ -118,7 +118,7 @@ describe('AutoMod rules Discord keeps for itself', () => {
       /Discord answered 404 Not Found when steward tried to change AutoMod rule "Server mention guard" \(\d+, mention_spam\) \(trigger_metadata\)\. Discord still lists it and returns it when read by its id, but refuses this change\./,
     );
     expect(step.error).toMatch(/did not delete, recreate or skip it/);
-    expect(step.error).toMatch(/Server Settings → Safety Setup → AutoMod/);
+    expect(step.error).toMatch(/Change it in the server's AutoMod settings in Discord/);
     expect(step.opIds).toHaveLength(1);
     // Only the differing field was sent, laid over the live metadata.
     expect(edits(env)).toEqual([
@@ -177,18 +177,81 @@ describe('AutoMod rules Discord keeps for itself', () => {
     expect(writes(env, 'createAutoModRule')).toBe(0);
   });
 
-  test('pruning a rule Discord keeps fails the step and keeps the mapping', async () => {
+  test('an exported rule steward did not create is not pruned without prune_unmanaged', async () => {
     env = makeEnv();
     const rule = kept(env);
     await exportBlueprint(env);
     const empty = { version: 1, roles: [], categories: [], messages: [] };
-    const { body, result } = await planAndApply(env, empty, { prune: { automod: true } }, true);
-    expect(body.steps.map((s) => s.action)).toEqual(['delete_automod']);
+    const { body } = await env.service.createPlan({
+      guildId: env.guildId,
+      blueprint: empty,
+      clientId: 'test',
+      options: { prune: { automod: true } } as never,
+    });
+    expect(body.steps).toEqual([]);
+    expect(body.warnings.find((w) => w.code === 'automod_not_pruned')!.message).toMatch(
+      /"Server mention guard" is bound to ".*" but steward did not create it/,
+    );
+    expect(env.adapter.automod.has(rule.id)).toBe(true);
+  });
+
+  test('a 404 on deleting a listed rule is a refusal, not "already gone"', async () => {
+    env = makeEnv();
+    const rule = kept(env);
+    await exportBlueprint(env);
+    const empty = { version: 1, roles: [], categories: [], messages: [] };
+    const { body, result } = await planAndApply(
+      env,
+      empty,
+      { prune: { automod: true }, prune_unmanaged: true },
+      true,
+    );
+    expect(body.steps.map((s) => s.summary)).toEqual([
+      'delete AutoMod rule "Server mention guard" (not created by steward)',
+    ]);
     const step = result.steps[0]!;
     expect(step.status).toBe('failed');
-    expect(step.error).toMatch(/Discord still lists AutoMod rule "Server mention guard".*after the delete/);
+    expect(step.error).toMatch(
+      /404 Not Found when steward tried to delete AutoMod rule "Server mention guard"/,
+    );
+    expect(step.error).toMatch(/did not delete, recreate or skip it/);
+    expect(env.store.getOperation(step.opIds[0]!)!.status).toBe('failed');
     expect(env.adapter.automod.has(rule.id)).toBe(true);
     expect(env.store.findMappingById(env.guildId, 'automod', rule.id)).toBeDefined();
+  });
+
+  test('a delete Discord accepts but does not carry out is reported', async () => {
+    env = makeEnv();
+    const rule = kept(env, 'returns');
+    env.store.setMapping(env.guildId, 'automod', 'mentions', rule.id, 'created');
+    const empty = { version: 1, roles: [], categories: [], messages: [] };
+    const { result } = await planAndApply(env, empty, { prune: { automod: true } }, true);
+    const step = result.steps[0]!;
+    expect(step.status).toBe('failed');
+    expect(step.error).toMatch(
+      /answered the delete of AutoMod rule "Server mention guard" .* with success, but still lists the rule/,
+    );
+    expect(env.store.findMappingById(env.guildId, 'automod', rule.id)).toBeDefined();
+  });
+
+  test('a rule steward created is pruned as before', async () => {
+    env = makeEnv();
+    const bp = {
+      version: 1,
+      roles: [],
+      categories: [],
+      messages: [],
+      automod: [
+        { key: 'spam', name: 'Spam', trigger: { type: 'spam' }, actions: [{ type: 'block_message' }] },
+      ],
+    };
+    await planAndApply(env, bp);
+    const id = env.store.getMapping(env.guildId, 'automod', 'spam')!.discordId;
+    const empty = { version: 1, roles: [], categories: [], messages: [] };
+    const { result } = await planAndApply(env, empty, { prune: { automod: true } }, true);
+    expect(result.status).toBe('applied');
+    expect(env.adapter.automod.has(id)).toBe(false);
+    expect(env.store.getMapping(env.guildId, 'automod', 'spam')).toBeUndefined();
   });
 });
 
@@ -292,7 +355,7 @@ describe('AutoMod MCP tools', () => {
       confirm_name: 'Server mention guard',
     });
     expect(del.isError).toBe(true);
-    expect(del.data.error.message).toMatch(/still lists .* after the delete/);
+    expect(del.data.error.message).toMatch(/404 Not Found when steward tried to delete/);
     expect(env.adapter.automod.has(rule.id)).toBe(true);
     expect(env.store.getMapping(guild_id, 'automod', 'mentions')?.discordId).toBe(rule.id);
   });

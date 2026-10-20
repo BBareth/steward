@@ -32,7 +32,12 @@ export class StewardError extends Error {
  * reports the step as failed and carries on with steps that do not depend on it.
  */
 export class RefusedChange extends StewardError {
-  constructor(message: string, details?: unknown) {
+  constructor(
+    message: string,
+    details?: unknown,
+    /** The journalled operation Discord refused, if a request was sent. */
+    readonly opId?: string,
+  ) {
     super('precondition_failed', message, details);
     this.name = 'RefusedChange';
   }

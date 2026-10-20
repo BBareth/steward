@@ -1,17 +1,19 @@
 import type { DiscordAdapter } from '../discord/adapter.js';
 import type { AutoModAction, AutoModRuleInfo, AutoModWriteBody } from '../discord/types.js';
-import type { DiscordRequestError } from '../util/errors.js';
-import { RefusedChange, safeErrorMessage } from '../util/errors.js';
+import { DiscordRequestError, RefusedChange, safeErrorMessage } from '../util/errors.js';
 import { stableStringify } from '../util/hash.js';
+import { OperationError } from './journal.js';
 
 /**
  * AutoMod updates that change only what was asked.
  *
- * Discord's Modify AutoMod Rule takes every field as optional and treats a
- * sent `actions` array as the whole list, so a body rebuilt from what steward
- * models would erase anything it does not (newer action types, unknown
- * metadata keys). Plans, the executor and the MCP tool all diff against the
- * live rule here, send only the fields that differ, and carry the rest over.
+ * Every field of Modify AutoMod Rule is optional. Discord's docs do not say
+ * whether a sent `actions` array or `trigger_metadata` object replaces or
+ * merges with the stored one, so steward assumes it replaces: a body rebuilt
+ * from what steward models could erase what it does not (newer action types,
+ * unknown metadata keys). Plans, the executor and the MCP tools all diff
+ * against the live rule here, send only the fields that differ, and carry the
+ * rest over.
  */
 
 export const AUTOMOD_TRIGGERS: Record<number, string> = {
@@ -136,10 +138,11 @@ const describe = (rule: AutoModRuleInfo) =>
   `AutoMod rule "${rule.name}" (${rule.id}, ${AUTOMOD_TRIGGERS[rule.triggerType] ?? `trigger type ${rule.triggerType}`})`;
 
 /** The rule a plan or tool call was made against is gone. Nothing was sent. */
-export function automodRuleGone(rule: Pick<AutoModRuleInfo, 'id' | 'name'>): RefusedChange {
+export function automodRuleGone(rule: Pick<AutoModRuleInfo, 'id' | 'name'>, opId?: string): RefusedChange {
   return new RefusedChange(
     `AutoMod rule "${rule.name}" (${rule.id}) is no longer listed by Discord; it was deleted or replaced after the plan was made. Nothing was changed; plan again`,
     { rule_id: rule.id, listed: false },
+    opId,
   );
 }
 
@@ -152,7 +155,7 @@ export async function explainAutomodNotFound(
   adapter: DiscordAdapter,
   guildId: string,
   rule: AutoModRuleInfo,
-  attempt: { verb: 'change' | 'delete'; fields?: string[]; error: DiscordRequestError },
+  attempt: { verb: 'change' | 'delete'; fields?: string[]; error: DiscordRequestError; opId?: string },
 ): Promise<RefusedChange> {
   const probe = async <T>(fn: () => Promise<T>): Promise<T | 'unknown'> => {
     try {
@@ -163,7 +166,7 @@ export async function explainAutomodNotFound(
   };
   const list = await probe(() => adapter.fetchAutoModRules(guildId));
   const listed = list === 'unknown' ? null : list.some((r) => r.id === rule.id);
-  if (listed === false) return automodRuleGone(rule);
+  if (listed === false) return automodRuleGone(rule, attempt.opId);
   const single = await probe(() => adapter.fetchAutoModRule(guildId, rule.id));
   const readable = single === 'unknown' ? null : single !== null;
   const what = attempt.fields?.length ? ` (${attempt.fields.join(', ')})` : '';
@@ -179,8 +182,8 @@ export async function explainAutomodNotFound(
     `Discord answered 404 Not Found when steward tried to ${attempt.verb} ${describe(rule)}${what}. ${seen} ` +
       'Discord appears to manage this rule itself. steward did not delete, recreate or skip it, and nothing was changed. ' +
       (attempt.verb === 'change'
-        ? 'Change it in Server Settings → Safety Setup → AutoMod, or make the blueprint match it (export_blueprint shows its current settings) or leave it out of the blueprint'
-        : 'Disable it in Server Settings → Safety Setup → AutoMod instead, or leave it out of the prune'),
+        ? "Change it in the server's AutoMod settings in Discord, make the blueprint match it (export_blueprint shows its current settings), or leave it out of the blueprint"
+        : "Disable it in the server's AutoMod settings in Discord instead, or leave it out of the prune"),
     {
       rule_id: rule.id,
       name: rule.name,
@@ -194,11 +197,40 @@ export async function explainAutomodNotFound(
       discord_code: attempt.error.code,
       discord_message: safeErrorMessage(attempt.error),
     },
+    attempt.opId,
   );
 }
 
-/** A delete Discord answered with success (or 404) but the rule is still listed. */
-export async function confirmAutomodDeleted(
+/**
+ * Run a write against a listed rule. A 404 becomes the diagnosis above rather
+ * than a bare failure; a delete is also never taken as done on a 404, and is
+ * confirmed by listing the rules again.
+ */
+export async function writeListedRule<T>(
+  adapter: DiscordAdapter,
+  guildId: string,
+  rule: AutoModRuleInfo,
+  attempt: { verb: 'change' | 'delete'; fields?: string[] },
+  send: () => Promise<T>,
+): Promise<T> {
+  let out: T;
+  try {
+    out = await send();
+  } catch (error) {
+    const underlying = error instanceof OperationError ? error.underlying : undefined;
+    if (!(underlying instanceof DiscordRequestError && underlying.isNotFound)) throw error;
+    throw await explainAutomodNotFound(adapter, guildId, rule, {
+      ...attempt,
+      error: underlying,
+      opId: (error as OperationError).opId,
+    });
+  }
+  if (attempt.verb === 'delete') await confirmAutomodDeleted(adapter, guildId, rule);
+  return out;
+}
+
+/** A delete Discord answered with success, but the rule is still listed. */
+async function confirmAutomodDeleted(
   adapter: DiscordAdapter,
   guildId: string,
   rule: AutoModRuleInfo,
@@ -206,7 +238,7 @@ export async function confirmAutomodDeleted(
   const still = (await adapter.fetchAutoModRules(guildId)).find((r) => r.id === rule.id);
   if (!still) return;
   throw new RefusedChange(
-    `Discord still lists ${describe(rule)} after the delete. Discord appears to keep this rule itself; steward did not recreate or change it. Disable it in Server Settings → Safety Setup → AutoMod instead, or leave it out of the prune`,
+    `Discord answered the delete of ${describe(rule)} with success, but still lists the rule. Discord appears to keep this rule itself; steward did not recreate or change it. Disable it in the server's AutoMod settings in Discord instead, or leave it out of the prune`,
     {
       rule_id: rule.id,
       name: rule.name,

@@ -11,9 +11,9 @@ import { botChannelPermissions, botStanding, has, P, roleById } from '../../disc
 import type { AutoModWriteBody, GuildSnapshot, GuildWriteBody } from '../../discord/types.js';
 import { assertSelfAssignable, buildPanelMessage } from '../../features/role-panels.js';
 import { buildMessageBody, embedSchema, messageFingerprint } from '../../features/messages.js';
-import { automodPatch, confirmAutomodDeleted, explainAutomodNotFound } from '../../ops/automod.js';
-import { OperationError, runOperation } from '../../ops/journal.js';
-import { DiscordRequestError, StewardError } from '../../util/errors.js';
+import { automodPatch, writeListedRule } from '../../ops/automod.js';
+import { runOperation } from '../../ops/journal.js';
+import { StewardError } from '../../util/errors.js';
 import { hashValue } from '../../util/hash.js';
 import { newId } from '../../util/ids.js';
 import { defineTool } from '../registry.js';
@@ -117,7 +117,7 @@ export const featureTools = [
         .boolean()
         .optional()
         .describe(
-          'Enable or disable Community. Enabling needs rules and updates channels, verification "low"+ and content filter "all_members".',
+          'Enable or disable Community. Needs Administrator. Enabling needs rules and updates text channels, verification "low"+ and content filter "all_members".',
         ),
       reason: reasonInput,
     }),
@@ -162,6 +162,11 @@ export const featureTools = [
         body.system_channel_flags = flags;
       }
       if (a.community !== undefined) {
+        if (a.community !== s.guild.features.includes('COMMUNITY') && !botStanding(s).isAdmin)
+          throw new StewardError(
+            'precondition_failed',
+            'Discord requires Administrator to turn Community on or off',
+          );
         const f = new Set(s.guild.features);
         if (a.community) f.add('COMMUNITY');
         else f.delete('COMMUNITY');
@@ -678,27 +683,23 @@ export const featureTools = [
         // Send only what differs; actions steward cannot express stay as they are.
         const patch = automodPatch(current, body);
         if (patch.fields.length === 0) return { rule_id: current.id, created: false, changed: [] };
-        try {
-          const out = await mutate(call, a.guild_id, a.reason, {
-            action: 'update_automod',
-            resourceKind: 'automod',
-            resourceKey: a.key,
-            targetId: current.id,
-            summary: `update AutoMod rule ${a.name} (${patch.fields.join(', ')})`,
-            idempotent: true,
-            run: (reason) => call.app.adapter.editAutoModRule(a.guild_id, current.id, patch.body, reason),
-          });
-          return { op_id: out.opId, rule_id: current.id, created: false, changed: patch.fields };
-        } catch (error) {
-          if (!(error instanceof OperationError && error.underlying instanceof DiscordRequestError))
-            throw error;
-          if (!error.underlying.isNotFound) throw error;
-          throw await explainAutomodNotFound(call.app.adapter, a.guild_id, current, {
-            verb: 'change',
-            fields: patch.fields,
-            error: error.underlying,
-          });
-        }
+        const out = await writeListedRule(
+          call.app.adapter,
+          a.guild_id,
+          current,
+          { verb: 'change', fields: patch.fields },
+          () =>
+            mutate(call, a.guild_id, a.reason, {
+              action: 'update_automod',
+              resourceKind: 'automod',
+              resourceKey: a.key,
+              targetId: current.id,
+              summary: `update AutoMod rule ${a.name} (${patch.fields.join(', ')})`,
+              idempotent: true,
+              run: (reason) => call.app.adapter.editAutoModRule(a.guild_id, current.id, patch.body, reason),
+            }),
+        );
+        return { op_id: out.opId, rule_id: current.id, created: false, changed: patch.fields };
       }
       const out = await mutate(call, a.guild_id, a.reason, {
         action: 'create_automod',
@@ -744,17 +745,17 @@ export const featureTools = [
           'precondition_failed',
           `confirm_name "${a.confirm_name}" does not match the rule's name "${rule.name}"`,
         );
-      const out = await mutate(call, a.guild_id, a.reason, {
-        action: 'delete_automod',
-        resourceKind: 'automod',
-        targetId: rule.id,
-        summary: `delete AutoMod rule ${rule.name}`,
-        idempotent: true,
-        notFoundIsSuccess: true,
-        run: (reason) => call.app.adapter.deleteAutoModRule(a.guild_id, rule.id, reason),
-      });
-      // A 404 counts as "already gone", so check: Discord keeps some rules itself.
-      await confirmAutomodDeleted(call.app.adapter, a.guild_id, rule);
+      // Not notFoundIsSuccess: Discord can answer 404 for a listed rule it keeps itself.
+      const out = await writeListedRule(call.app.adapter, a.guild_id, rule, { verb: 'delete' }, () =>
+        mutate(call, a.guild_id, a.reason, {
+          action: 'delete_automod',
+          resourceKind: 'automod',
+          targetId: rule.id,
+          summary: `delete AutoMod rule ${rule.name}`,
+          idempotent: true,
+          run: (reason) => call.app.adapter.deleteAutoModRule(a.guild_id, rule.id, reason),
+        }),
+      );
       call.app.store.deleteMappingById(a.guild_id, 'automod', rule.id);
       return { op_id: out.opId, deleted: rule.id };
     },

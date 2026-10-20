@@ -100,9 +100,10 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
   automod = new Map<string, AutoModRuleInfo>();
   /**
    * Rules Discord keeps for itself: listed, but edits and deletes answer 404.
-   * 'hidden' rules also answer 404 when read by id.
+   * 'hidden' rules also answer 404 when read by id; 'returns' rules accept
+   * the delete and stay listed.
    */
-  nativeAutomod = new Map<string, 'readable' | 'hidden'>();
+  nativeAutomod = new Map<string, 'readable' | 'hidden' | 'returns'>();
   audit: AuditLogEntry[] = [];
   calls: Array<{ method: string; args: unknown[] }> = [];
   private nonces = new Map<string, string>();
@@ -246,7 +247,7 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
 
   addAutoModRule(
     spec: Partial<AutoModRuleInfo> & { name: string },
-    native?: 'readable' | 'hidden',
+    native?: 'readable' | 'hidden' | 'returns',
   ): AutoModRuleInfo {
     const rule: AutoModRuleInfo = {
       id: makeSnowflake(),
@@ -861,7 +862,8 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     const mode = await this.enter('editAutoModRule', [guildId, ruleId, body, reason]);
     this.requireGuildPerm(P.ManageGuild, 'automod needs Manage Server');
     const rule = this.automod.get(ruleId);
-    if (!rule || this.nativeAutomod.has(ruleId)) throw this.notFound();
+    if (!rule || (this.nativeAutomod.has(ruleId) && this.nativeAutomod.get(ruleId) !== 'returns'))
+      throw this.notFound();
     if (body.name !== undefined) rule.name = body.name;
     if (body.event_type !== undefined) rule.eventType = body.event_type;
     if (body.trigger_metadata !== undefined) rule.triggerMetadata = clone(body.trigger_metadata);
@@ -875,7 +877,9 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
   async deleteAutoModRule(guildId: string, ruleId: string, reason: string): Promise<void> {
     const mode = await this.enter('deleteAutoModRule', [guildId, ruleId, reason]);
     this.requireGuildPerm(P.ManageGuild, 'automod needs Manage Server');
-    if (this.nativeAutomod.has(ruleId) || !this.automod.delete(ruleId)) throw this.notFound();
+    const native = this.nativeAutomod.get(ruleId);
+    if (native === 'returns' && this.automod.has(ruleId)) return this.leave(mode, undefined);
+    if (native || !this.automod.delete(ruleId)) throw this.notFound();
     return this.leave(mode, undefined);
   }
 

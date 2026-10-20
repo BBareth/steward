@@ -112,6 +112,24 @@ describe('turning Community on in a fresh server', () => {
     );
   });
 
+  test('verification and content filter are checked on the values the server will have', async () => {
+    env = makeEnv(STRICT);
+    const { verification_level: _v, explicit_content_filter: _f, ...settings } = fresh().settings;
+    const blocked = async () => {
+      const { body } = await env!.service.createPlan({
+        guildId: env!.guildId,
+        blueprint: { ...fresh(), settings },
+        clientId: 'test',
+      });
+      return body.steps.find((s) => s.action === 'update_settings')!.blocked;
+    };
+    expect(await blocked()).toMatch(/Community needs verification level "low" or higher/);
+    env.adapter.guild.verificationLevel = 2;
+    expect(await blocked()).toMatch(/Community needs the content filter to scan all members/);
+    env.adapter.guild.explicitContentFilter = 2;
+    expect(await blocked()).toBeUndefined();
+  });
+
   test('turning Community on needs Administrator', async () => {
     env = makeEnv({
       ...STRICT,
@@ -146,7 +164,7 @@ describe('servers that stay without Community', () => {
       validateBlueprint(bp)
         .warnings.map((w) => w.message)
         .join(),
-    ).toMatch(/forum and media channels launched/);
+    ).toMatch(/forum channels launched/);
     const { body, result } = await planAndApply(env, bp);
     expect(body.unsupported).toEqual([]);
     expect(body.warnings.map((w) => w.code)).toContain('community_may_be_needed');
@@ -164,15 +182,18 @@ describe('servers that stay without Community', () => {
     expect(step.opIds).toHaveLength(1);
   });
 
-  test('stage channels are still unsupported without Community', async () => {
-    env = makeEnv();
-    const { body } = await env.service.createPlan({
-      guildId: env.guildId,
-      blueprint: noCommunity('stage'),
-      clientId: 'test',
-    });
-    expect(body.unsupported.map((u) => u.code)).toEqual(['needs_community']);
-  });
+  test.each(['stage', 'media', 'announcement'])(
+    '%s channels are unsupported without Community',
+    async (type) => {
+      env = makeEnv();
+      const { body } = await env.service.createPlan({
+        guildId: env.guildId,
+        blueprint: noCommunity(type),
+        clientId: 'test',
+      });
+      expect(body.unsupported.map((u) => u.code)).toEqual(['needs_community']);
+    },
+  );
 
   test('a server with the NEWS feature can have announcement channels', async () => {
     env = makeEnv(STRICT);

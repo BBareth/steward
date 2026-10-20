@@ -258,22 +258,20 @@ export function validateBlueprint(input: unknown): ValidationResult {
       }
     }
   }
-  const needsCommunity = channels.filter(
-    ({ channel }) => channel.type === 'announcement' || channel.type === 'stage',
+  const needsCommunity = channels.filter(({ channel }) =>
+    ['announcement', 'stage', 'media'].includes(channel.type),
   );
   if (needsCommunity.length > 0 && !s?.community) {
     warn(
       needsCommunity[0]!.path,
-      'announcement and stage channels need the Community feature; the plan will report them as unsupported unless the server is already a Community server or "settings.community" is true',
+      'announcement, stage and media channels need the Community feature (announcement channels also work with the older NEWS feature); the plan will report them as unsupported unless the server already has it or "settings.community" is true',
     );
   }
-  const mayNeedCommunity = channels.filter(
-    ({ channel }) => channel.type === 'forum' || channel.type === 'media',
-  );
-  if (mayNeedCommunity.length > 0 && !s?.community) {
+  const forums = channels.filter(({ channel }) => channel.type === 'forum');
+  if (forums.length > 0 && !s?.community) {
     warn(
-      mayNeedCommunity[0]!.path,
-      'forum and media channels launched for Community servers, and Discord does not document whether some servers still need it; if Discord refuses one, set "settings.community" to true. With it set, steward creates them after turning Community on',
+      forums[0]!.path,
+      'forum channels launched for Community servers, and Discord no longer documents whether that applies; if Discord refuses one, set "settings.community" to true, and steward creates it after turning Community on',
     );
   }
 

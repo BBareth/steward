@@ -3,13 +3,7 @@ import type { ChannelWriteBody, GuildSnapshot, GuildWriteBody } from '../discord
 import { assertSelfAssignable, buildPanelMessage } from '../features/role-panels.js';
 import { buildMessageBody, messageFingerprint } from '../features/messages.js';
 import type { Logger } from '../logger.js';
-import {
-  automodPatch,
-  automodRuleGone,
-  automodWriteBody,
-  confirmAutomodDeleted,
-  explainAutomodNotFound,
-} from '../ops/automod.js';
+import { automodPatch, automodRuleGone, automodWriteBody, writeListedRule } from '../ops/automod.js';
 import type { OpContext, OpOutcome } from '../ops/journal.js';
 import { OperationError, runOperation } from '../ops/journal.js';
 import { bucketMembers, channelOrderHolds, channelPositionUpdates, roleOrderPlan } from '../ops/ordering.js';
@@ -161,7 +155,13 @@ export class PlanExecutor {
       } catch (error) {
         r.status = error instanceof OperationError && error.outcome === 'uncertain' ? 'uncertain' : 'failed';
         r.error = safeErrorMessage(error);
-        if (error instanceof OperationError && !r.opIds.includes(error.opId)) r.opIds.push(error.opId);
+        const opId =
+          error instanceof OperationError
+            ? error.opId
+            : error instanceof RefusedChange
+              ? error.opId
+              : undefined;
+        if (opId && !r.opIds.includes(opId)) r.opIds.push(opId);
         this.deps.logger.warn('plan step failed', {
           planId: this.planId,
           stepId: step.id,
@@ -474,10 +474,10 @@ export class PlanExecutor {
             r.note = 'the rule already matches';
             return;
           }
-          try {
-            this.track(
-              r,
-              await runOperation(ctx, {
+          this.track(
+            r,
+            await writeListedRule(adapter, g, live, { verb: 'change', fields: patch.fields }, () =>
+              runOperation(ctx, {
                 action: 'update_automod',
                 resourceKind: 'automod',
                 resourceKey: step.key,
@@ -486,19 +486,9 @@ export class PlanExecutor {
                 idempotent: true,
                 run: (reason) => adapter.editAutoModRule(g, step.ruleId, patch.body, reason),
               }),
-              step.ruleId,
-            );
-          } catch (error) {
-            if (!(error instanceof OperationError && error.underlying instanceof DiscordRequestError))
-              throw error;
-            if (!error.underlying.isNotFound) throw error;
-            r.opIds.push(error.opId);
-            throw await explainAutomodNotFound(adapter, g, live, {
-              verb: 'change',
-              fields: patch.fields,
-              error: error.underlying,
-            });
-          }
+            ),
+            step.ruleId,
+          );
         }
         return;
       }
@@ -595,15 +585,37 @@ export class PlanExecutor {
         await this.panel(step, r, ctx);
         return;
       }
-      case 'delete_channel':
-      case 'delete_role':
       case 'delete_automod': {
-        const kind: MappingKind =
-          step.action === 'delete_channel' ? 'channel' : step.action === 'delete_role' ? 'role' : 'automod';
-        const rule =
-          kind === 'automod'
-            ? (await adapter.fetchAutoModRules(g)).find((x) => x.id === step.targetId)
-            : undefined;
+        // Discord can answer 404 for a rule it keeps itself, so a 404 on a
+        // listed rule is not "already gone", and a delete is read back.
+        const rule = (await adapter.fetchAutoModRules(g)).find((x) => x.id === step.targetId);
+        if (!rule) {
+          r.status = 'noop';
+          r.note = 'the rule was already gone';
+        } else {
+          this.track(
+            r,
+            await writeListedRule(adapter, g, rule, { verb: 'delete' }, () =>
+              runOperation(ctx, {
+                action: step.action,
+                resourceKind: 'automod',
+                resourceKey: step.key,
+                targetId: step.targetId,
+                summary: step.summary,
+                idempotent: true,
+                run: (reason) => adapter.deleteAutoModRule(g, step.targetId, reason),
+              }),
+            ),
+            step.targetId,
+          );
+        }
+        store.deleteMappingById(g, 'automod', step.targetId);
+        if (r.status === 'not_started') r.status = 'succeeded';
+        return;
+      }
+      case 'delete_channel':
+      case 'delete_role': {
+        const kind: MappingKind = step.action === 'delete_channel' ? 'channel' : 'role';
         this.track(
           r,
           await runOperation(ctx, {
@@ -617,14 +629,10 @@ export class PlanExecutor {
             run: (reason) =>
               kind === 'channel'
                 ? adapter.deleteChannel(step.targetId, reason)
-                : kind === 'role'
-                  ? adapter.deleteRole(g, step.targetId, reason)
-                  : adapter.deleteAutoModRule(g, step.targetId, reason),
+                : adapter.deleteRole(g, step.targetId, reason),
           }),
           step.targetId,
         );
-        // A 404 counts as "already gone", so check: Discord keeps some rules itself.
-        if (rule) await confirmAutomodDeleted(adapter, g, rule);
         store.deleteMappingById(g, kind, step.targetId);
         if (kind === 'role') {
           store.removeSelfRole(g, step.targetId);

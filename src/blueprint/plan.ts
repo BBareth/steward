@@ -36,6 +36,7 @@ import type { AutoModRuleInfo, ChannelInfo, ChannelKind, GuildSnapshot, RoleInfo
 import { CHANNEL_TYPE_NUMBERS } from '../discord/types.js';
 import type { OverwriteSpec } from '../features/access.js';
 import { expandAccess, mergeOverwrites } from '../features/access.js';
+import { AFTER_COMMUNITY_KINDS, channelKindNeedsCommunity } from '../features/community.js';
 import { buildMessageBody, parseColor } from '../features/messages.js';
 import { automodPatch, automodWriteBody, unmodelledActions } from '../ops/automod.js';
 import { roleOrderPlan } from '../ops/ordering.js';
@@ -60,15 +61,6 @@ export interface PlannerInput {
 }
 
 const TEXT_GROUP = new Set<ChannelKind>(['text', 'announcement', 'forum', 'media']);
-/**
- * Channel types Discord ties to the Community feature. Announcement and stage
- * channels need it (announcement channels also come with the older NEWS
- * feature). Forum and media channels launched for Community servers and the
- * API docs no longer say whether that still applies, so steward does not
- * refuse them; when a plan turns Community on, all four wait until it is on.
- */
-const COMMUNITY_TYPES = new Set(['announcement', 'stage']);
-const AFTER_COMMUNITY_TYPES = new Set(['announcement', 'stage', 'forum', 'media']);
 const BITRATE_LIMITS = [96000, 128000, 256000, 384000];
 
 const groupOf = (kind: ChannelKind | string): 'category' | 'text' | 'voice' =>
@@ -131,7 +123,6 @@ class Planner {
   private readonly communityEnabled: boolean;
   /** Turning Community on is part of this plan. */
   private readonly enablingCommunity: boolean;
-  private readonly hasNews: boolean;
 
   constructor(private readonly input: PlannerInput) {
     this.bp = input.blueprint;
@@ -144,7 +135,6 @@ class Planner {
     }
     this.communityEnabled = this.snap.guild.features.includes('COMMUNITY');
     this.enablingCommunity = !this.communityEnabled && this.bp.settings?.community === true;
-    this.hasNews = this.snap.guild.features.includes('NEWS');
     for (const cat of this.bp.categories) {
       this.entries.push({
         key: cat.key,
@@ -753,14 +743,13 @@ class Planner {
       if ((phase === 'category') !== (e.kind === 'category')) continue;
       if (!this.ids.channel.has(e.key)) continue;
       const id = this.ids.channel.get(e.key)!;
-      const needsCommunity =
-        COMMUNITY_TYPES.has(e.kind) && !this.communityEnabled && !(e.kind === 'announcement' && this.hasNews);
+      const needsCommunity = channelKindNeedsCommunity(this.snap.guild.features, e.kind);
       const enablingCommunity = this.enablingCommunity;
       // Creating a channel of a type tied to Community, or converting a text
       // channel into one, waits until the settings step has turned Community on.
       const converting = id !== null && e.kind !== 'category' && this.channel(id)?.kind !== e.kind;
       const afterSettings =
-        AFTER_COMMUNITY_TYPES.has(e.kind) && enablingCommunity && (id === null || converting);
+        AFTER_COMMUNITY_KINDS.has(e.kind) && enablingCommunity && (id === null || converting);
       if (phase === 'channel' && afterSettings) continue;
       if (phase === 'community' && !afterSettings) continue;
       const settingsDep = phase === 'community' && this.settingsStepId ? [this.settingsStepId] : [];
@@ -783,17 +772,17 @@ class Planner {
           });
           continue;
         }
-        if ((e.kind === 'forum' || e.kind === 'media') && !this.communityEnabled && !enablingCommunity) {
+        if (e.kind === 'forum' && !this.communityEnabled && !enablingCommunity) {
           this.warn(
             'community_may_be_needed',
-            `${e.kind} channel "${e.key}" is created on a server without the Community feature. Discord launched ${e.kind} channels for Community servers and does not document whether that still applies; if Discord refuses, set settings.community: true or use a text channel`,
+            `forum channel "${e.key}" is created on a server without the Community feature. Discord launched forum channels for Community servers and no longer documents whether that applies; if Discord refuses, set settings.community: true or use a text channel`,
             e.key,
           );
         }
         if (e.kind === 'media') {
           this.warn(
             'media_channel_beta',
-            `media channel "${e.key}": Discord documents media channels as still in development and may only allow them on some servers`,
+            `media channel "${e.key}": Discord documents media channels as still in development, and Community alone may not be enough to create one`,
             e.key,
           );
         }
@@ -848,7 +837,7 @@ class Planner {
           (ch.kind === 'text' && e.kind === 'announcement') ||
           (ch.kind === 'announcement' && e.kind === 'text')
         ) {
-          if (this.communityEnabled || this.hasNews || enablingCommunity) {
+          if (!channelKindNeedsCommunity(this.snap.guild.features, 'announcement') || enablingCommunity) {
             changes.push({ field: 'type', from: ch.kind, to: e.kind });
             changed.type = CHANNEL_TYPE_NUMBERS[e.kind as keyof typeof CHANNEL_TYPE_NUMBERS];
           } else {
@@ -1139,18 +1128,32 @@ class Planner {
     const { dependsOn } = deps;
     let blocked = deps.blocked;
     if (this.enablingCommunity) {
-      // Community needs its rules and updates channels first, so they cannot
-      // be channels that are only created once Community is on.
-      for (const [field, value] of [
-        ['rules_channel', s.rules_channel],
-        ['public_updates_channel', s.public_updates_channel],
+      // The settings step cannot point at a channel that is only created once
+      // the same step has turned Community on.
+      for (const field of [
+        'rules_channel',
+        'public_updates_channel',
+        'system_channel',
+        'safety_alerts_channel',
+        'afk_channel',
       ] as const) {
+        const value = s[field];
         const key = value ? refKey(channelRef(value)) : null;
         const entry = key ? this.entries.find((x) => x.key === key) : undefined;
-        if (entry && this.ids.channel.get(entry.key) === null && AFTER_COMMUNITY_TYPES.has(entry.kind)) {
+        if (entry && this.ids.channel.get(entry.key) === null && AFTER_COMMUNITY_KINDS.has(entry.kind)) {
           blocked ??= `settings.${field} is "${entry.key}", a ${entry.kind} channel that can only be created once Community is on; point it at a text channel`;
         }
       }
+      // Requirements from Discord's guide to enabling Community; the API
+      // reference does not list them, so they are checked on the values the
+      // server will have after this step.
+      const verification = fields.verification_level ?? g.verificationLevel;
+      const filter = fields.explicit_content_filter ?? g.explicitContentFilter;
+      if (verification < 1)
+        blocked ??= 'Community needs verification level "low" or higher; set settings.verification_level';
+      else if (filter !== 2)
+        blocked ??=
+          'Community needs the content filter to scan all members; set settings.explicit_content_filter: all_members';
     }
     if (fields.community !== undefined && !this.bot.isAdmin) {
       blocked ??= 'Discord requires Administrator to turn Community on or off';
@@ -1619,14 +1622,29 @@ class Planner {
     if (prune.automod && this.input.automodRules) {
       for (const r of this.input.automodRules) {
         if (inBlueprint('automod', r.id)) continue;
-        const key = mappedKey('automod', r.id);
-        if (!key && !prune_unmanaged) continue;
+        const mapping = this.input.mappings.find((m) => m.kind === 'automod' && m.discordId === r.id);
+        const key = mapping?.key ?? null;
+        // Only rules steward made count as its own here. An exported or bound
+        // rule may be one the server or Discord set up, such as a built-in
+        // protection, so it needs prune_unmanaged like any unmanaged rule.
+        const ours =
+          mapping?.source === 'created' || mapping?.source === 'recovered' || r.creatorId === this.bot.userId;
+        if (!ours && !prune_unmanaged) {
+          if (key) {
+            this.warn(
+              'automod_not_pruned',
+              `AutoMod rule "${r.name}" is bound to "${key}" but steward did not create it, so it is only pruned with prune_unmanaged`,
+              key,
+            );
+          }
+          continue;
+        }
         this.add({
           action: 'delete_automod',
           key,
           targetId: r.id,
           name: r.name,
-          summary: `delete AutoMod rule "${r.name}"${key ? '' : ' (not managed by steward)'}`,
+          summary: `delete AutoMod rule "${r.name}"${ours ? '' : ' (not created by steward)'}`,
           destructive: true,
           dependsOn: [],
           blocked: has(this.bot.permissions, P.ManageGuild) ? undefined : 'AutoMod needs Manage Server',

@@ -343,6 +343,19 @@ export class DiscordJsAdapter implements DiscordAdapter {
     );
   }
 
+  async fetchAutoModRule(guildId: string, ruleId: string): Promise<AutoModRuleInfo | null> {
+    const rest = this.rest();
+    try {
+      return normaliseAutoModRule(
+        (await rest.get(Routes.guildAutoModerationRule(guildId, ruleId))) as APIAutoModerationRule,
+      );
+    } catch (error) {
+      const e = toRequestError(error);
+      if (e instanceof DiscordRequestError && e.status === 404) return null;
+      throw e;
+    }
+  }
+
   async fetchMessage(channelId: string, messageId: string): Promise<MessageInfo | null> {
     const rest = this.rest();
     try {

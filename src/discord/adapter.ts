@@ -59,6 +59,8 @@ export interface DiscordAdapter {
   fetchSnapshot(guildId: string): Promise<GuildSnapshot>;
   fetchMember(guildId: string, userId: string): Promise<MemberInfo | null>;
   fetchAutoModRules(guildId: string): Promise<AutoModRuleInfo[]>;
+  /** One rule by id; null when Discord answers 404 for it. */
+  fetchAutoModRule(guildId: string, ruleId: string): Promise<AutoModRuleInfo | null>;
   fetchMessage(channelId: string, messageId: string): Promise<MessageInfo | null>;
   /** Most recent messages in a channel, newest first. Content of other people's messages may be empty without the Message Content intent. */
   fetchRecentMessages(channelId: string, limit: number): Promise<MessageInfo[]>;

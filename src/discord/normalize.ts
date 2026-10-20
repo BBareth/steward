@@ -144,28 +144,18 @@ export function normaliseMessage(raw: APIMessage): MessageInfo {
 }
 
 export function normaliseAutoModRule(raw: APIAutoModerationRule): AutoModRuleInfo {
-  const m = raw.trigger_metadata ?? {};
+  // Every key is kept, including ones steward does not model, so an update can
+  // send them back instead of erasing them.
   return {
     id: raw.id,
     name: raw.name,
     eventType: raw.event_type,
     triggerType: raw.trigger_type,
-    triggerMetadata: compact({
-      keyword_filter: m.keyword_filter,
-      regex_patterns: m.regex_patterns,
-      presets: m.presets as number[] | undefined,
-      allow_list: m.allow_list,
-      mention_total_limit: m.mention_total_limit,
-      mention_raid_protection_enabled: m.mention_raid_protection_enabled,
-    }),
+    triggerMetadata: compact({ ...(raw.trigger_metadata ?? {}) } as AutoModRuleInfo['triggerMetadata']),
     actions: raw.actions.map((a) => ({
       type: a.type,
       metadata: a.metadata
-        ? compact({
-            channel_id: a.metadata.channel_id,
-            duration_seconds: a.metadata.duration_seconds,
-            custom_message: a.metadata.custom_message ?? undefined,
-          })
+        ? compact({ ...a.metadata, custom_message: a.metadata.custom_message ?? undefined })
         : undefined,
     })),
     enabled: raw.enabled,

@@ -37,6 +37,8 @@ import { CHANNEL_TYPE_NUMBERS } from '../discord/types.js';
 import type { OverwriteSpec } from '../features/access.js';
 import { expandAccess, mergeOverwrites } from '../features/access.js';
 import { buildMessageBody, parseColor } from '../features/messages.js';
+import { automodPatch, automodWriteBody, unmodelledActions } from '../ops/automod.js';
+import { roleOrderPlan } from '../ops/ordering.js';
 import type { ManagedMessage, Mapping, MappingKind, RolePanel, WelcomeConfig } from '../store.js';
 import { StewardError } from '../util/errors.js';
 import { hashValue, stableStringify } from '../util/hash.js';
@@ -574,11 +576,26 @@ class Planner {
       else this.warn('role_not_movable', `role "${r.key}" will keep its position: ${verdict.reason}`, r.key);
     }
     if (movable.length < 2) return;
-    const existing = movable.map((k) => this.ids.role.get(k)).filter((id): id is string => !!id);
-    const current = rolesTopDown(this.snap)
-      .map((r) => r.id)
-      .filter((id) => existing.includes(id));
-    if (!anyNew && stableStringify(current) === stableStringify(existing)) return;
+    // The executor and verify use this same calculation, so "needs reordering"
+    // here and "already in order" there can never disagree.
+    let blocked: string | undefined;
+    if (!anyNew) {
+      const existing = movable.map((k) => this.ids.role.get(k)!);
+      const order = roleOrderPlan(this.snap, existing);
+      if (order.inOrder) return;
+      if (order.blocker) blocked = `cannot order the roles: ${order.blocker}`;
+    } else {
+      // New roles do not exist yet. Discord adds them at the bottom of the list,
+      // so rehearse with stand-ins there and warn if the order looks out of reach.
+      const rehearsal = this.withNewRoleStandIns(movable);
+      const order = roleOrderPlan(rehearsal.snapshot, rehearsal.ids);
+      if (order.blocker) {
+        this.warn(
+          'role_order_at_risk',
+          `once the new roles exist, ordering them may be blocked: ${order.blocker}. The apply step will check again and report it rather than claim success`,
+        );
+      }
+    }
     const { dependsOn } = this.deps(movable.map((k) => ({ ref: `key:${k}`, kind: 'role' as const })));
     this.add({
       action: 'reorder_roles',
@@ -586,8 +603,31 @@ class Planner {
       summary: `order roles top to bottom: ${movable.join(' > ')}`,
       destructive: false,
       dependsOn,
-      blocked: has(this.bot.permissions, P.ManageRoles) ? undefined : 'the bot lacks Manage Roles',
+      blocked: has(this.bot.permissions, P.ManageRoles) ? blocked : 'the bot lacks Manage Roles',
     });
+  }
+
+  /** A copy of the snapshot with stand-ins for roles the plan creates, at the bottom of the list. */
+  private withNewRoleStandIns(keys: string[]): { snapshot: GuildSnapshot; ids: string[] } {
+    let next = this.snap.roles.reduce((max, r) => (BigInt(r.id) > max ? BigInt(r.id) : max), 0n);
+    const roles = [...this.snap.roles];
+    const ids = keys.map((k) => {
+      const id = this.ids.role.get(k);
+      if (id) return id;
+      next += 1n;
+      const standIn = {
+        ...roles[0]!,
+        id: next.toString(),
+        name: k,
+        position: 1,
+        managed: false,
+        permissions: 0n,
+        tags: null,
+      };
+      roles.push(standIn);
+      return standIn.id;
+    });
+    return { snapshot: { ...this.snap, roles }, ids };
   }
 
   // ---- channels -----------------------------------------------------------------
@@ -1127,62 +1167,24 @@ class Planner {
     };
   }
 
-  /** Comparable form of a rule; refs that point at not-yet-created resources never compare equal. */
-  private automodComparable(f: AutoModFields): string | null {
+  /** What Discord would receive, or null while a referenced role or channel does not exist yet. */
+  private automodWant(f: AutoModFields) {
     let unresolved = false;
-    const r = (ref: RefString, kind: MappingKind) => {
+    const body = automodWriteBody(f, (ref, kind) => {
       const id = this.resolve(ref, kind);
       if (!id) unresolved = true;
-      return id ?? '?';
-    };
-    const sorted = (v: unknown) => (Array.isArray(v) ? [...v].map(String).sort() : v);
-    const meta: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(f.trigger_metadata)) {
-      if (Array.isArray(v) && v.length === 0) continue;
-      meta[k] = sorted(v);
-    }
-    const value = {
-      name: f.name,
-      enabled: f.enabled,
-      trigger_type: f.trigger_type,
-      meta,
-      actions: f.actions.map((a) => ({
-        type: a.type,
-        channel: a.channel ? r(a.channel, 'channel') : undefined,
-        duration_seconds: a.duration_seconds,
-        custom_message: a.custom_message,
-      })),
-      exempt_roles: f.exempt_roles.map((x) => r(x, 'role')).sort(),
-      exempt_channels: f.exempt_channels.map((x) => r(x, 'channel')).sort(),
-    };
-    return unresolved ? null : stableStringify(value);
+      return id ?? '';
+    });
+    return unresolved ? null : body;
   }
 
-  private ruleComparable(rule: AutoModRuleInfo): string {
-    const sorted = (v: unknown) => (Array.isArray(v) ? [...v].map(String).sort() : v);
-    const meta: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(rule.triggerMetadata)) {
-      if (v === undefined || (Array.isArray(v) && v.length === 0)) continue;
-      if (rule.triggerType === 5 && k === 'mention_raid_protection_enabled' && v === false) {
-        meta[k] = false;
-        continue;
-      }
-      meta[k] = sorted(v);
-    }
-    return stableStringify({
-      name: rule.name,
-      enabled: rule.enabled,
-      trigger_type: rule.triggerType,
-      meta,
-      actions: rule.actions.map((a) => ({
-        type: a.type,
-        channel: a.metadata?.channel_id,
-        duration_seconds: a.metadata?.duration_seconds,
-        custom_message: a.metadata?.custom_message || undefined,
-      })),
-      exempt_roles: [...rule.exemptRoles].sort(),
-      exempt_channels: [...rule.exemptChannels].sort(),
-    });
+  private automodLimitReason(type: string, triggerType: number, limit: number, rules: AutoModRuleInfo[]) {
+    const existing = rules.filter((r) => r.triggerType === triggerType).map((r) => `"${r.name}"`);
+    return (
+      `the server already has the maximum number of ${type} rules (${limit}): ${existing.join(', ')}. ` +
+      'To manage an existing rule, give the blueprint entry the same name (or bind it with map_resource) instead of creating another; ' +
+      'rules Discord keeps for itself may not be removable'
+    );
   }
 
   private planAutomod() {
@@ -1218,9 +1220,16 @@ class Planner {
             blocked ??
             (!canManage
               ? 'AutoMod needs Manage Server'
-              : over
-                ? `the server already has the maximum number of ${a.trigger.type} rules (${limits[fields.trigger_type]}); prune or remove one first`
-                : undefined),
+              : a.trigger.type === 'mention_spam' && a.trigger.mention_total_limit === undefined
+                ? 'a new mention_spam rule needs mention_total_limit'
+                : over
+                  ? this.automodLimitReason(
+                      a.trigger.type,
+                      fields.trigger_type,
+                      limits[fields.trigger_type]!,
+                      rules,
+                    )
+                  : undefined),
         });
         this.creators.automod.set(a.key, stepId);
         continue;
@@ -1234,18 +1243,33 @@ class Planner {
         });
         continue;
       }
-      const want = this.automodComparable(fields);
-      if (want !== null && want === this.ruleComparable(rule)) {
+      const extra = unmodelledActions(rule);
+      if (extra.length > 0) {
+        this.warn(
+          'automod_unmodelled',
+          `AutoMod rule "${rule.name}" has ${extra.length} action(s) steward does not model (type ${[...new Set(extra.map((x) => x.type))].join(', ')}); updates keep them as they are`,
+          a.key,
+        );
+      }
+      // The same diff the executor sends, so plan, apply and verify agree.
+      const want = this.automodWant(fields);
+      const patch = want ? automodPatch(rule, want) : null;
+      if (patch && patch.fields.length === 0) {
         this.unchanged++;
         continue;
       }
+      const changed = patch?.fields ?? ['rule'];
       this.add({
         action: 'update_automod',
         key: a.key,
         ruleId: id,
         fields,
-        changes: [{ field: 'rule', from: rule.name, to: a.name }],
-        summary: `update AutoMod rule "${rule.name}"`,
+        changes: changed.map((field) =>
+          field === 'name' || field === 'enabled'
+            ? { field, from: rule[field], to: fields[field] }
+            : { field, from: 'current', to: 'blueprint' },
+        ),
+        summary: `update AutoMod rule "${rule.name}": ${changed.join(', ')}`,
         destructive: false,
         dependsOn,
         blocked: blocked ?? (canManage ? undefined : 'AutoMod needs Manage Server'),

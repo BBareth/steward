@@ -162,8 +162,12 @@ export function has(perms: bigint, bit: bigint): boolean {
 
 export interface BotStanding {
   userId: string;
+  /**
+   * The bot's top role in Discord's order. Compare roles against it with
+   * `compareRoles` / `ranksBelowBot`, never by raw `position`: Discord lets
+   * several roles share a position and breaks the tie by id.
+   */
   highestRole: RoleInfo | undefined;
-  highestPosition: number;
   permissions: bigint;
   isAdmin: boolean;
 }
@@ -180,10 +184,26 @@ export function botStanding(snapshot: GuildSnapshot): BotStanding {
   return {
     userId: snapshot.botMember.userId,
     highestRole: roles[0],
-    highestPosition: roles[0]?.position ?? 0,
     permissions,
     isAdmin: permissions === ALL_PERMISSIONS,
   };
+}
+
+/**
+ * Whether `role` sits strictly below the bot's highest role. This is the one
+ * hierarchy test every summary, plan and mutation uses.
+ */
+export function ranksBelowBot(snapshot: GuildSnapshot, role: RoleInfo): boolean {
+  const top = botStanding(snapshot).highestRole;
+  return !!top && compareRoles(role, top) < 0;
+}
+
+/** Roles (other than @everyone and the bot's own top role) the bot cannot manage because of hierarchy. */
+export function rolesOutOfBotReach(snapshot: GuildSnapshot): RoleInfo[] {
+  const top = botStanding(snapshot).highestRole;
+  return rolesTopDown(snapshot).filter(
+    (r) => r.id !== snapshot.guild.id && r.id !== top?.id && !ranksBelowBot(snapshot, r),
+  );
 }
 
 export function botChannelPermissions(snapshot: GuildSnapshot, channel: ChannelInfo): bigint {
@@ -217,7 +237,7 @@ export function canBotManageRole(snapshot: GuildSnapshot, role: RoleInfo, operat
         'the role is managed by an integration (a bot, booster or linked role); Discord does not allow assigning or deleting it',
     };
   }
-  if (!isEveryone && (!bot.highestRole || compareRoles(role, bot.highestRole) >= 0)) {
+  if (!isEveryone && !ranksBelowBot(snapshot, role)) {
     return {
       ok: false,
       reason: `the role is at or above the bot's highest role (${bot.highestRole?.name ?? 'none'}); move the bot's role higher in Server Settings → Roles`,

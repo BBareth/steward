@@ -8,6 +8,7 @@ import type {
   Overwrite,
 } from '../discord/types.js';
 import { formatColor } from '../features/messages.js';
+import { AUTOMOD_TRIGGERS, isModelledAction, unmodelledActions } from '../ops/automod.js';
 import { bucketMembers } from '../ops/ordering.js';
 import type { ManagedMessage, Mapping, MappingKind, RolePanel, WelcomeConfig } from '../store.js';
 import {
@@ -222,46 +223,64 @@ export function exportBlueprint(input: ExportInput): ExportResult {
 
   if (input.automodRules) {
     const presets = reverse(AUTOMOD_PRESETS);
-    const rules = input.automodRules
-      .filter((r) => [1, 3, 4, 5].includes(r.triggerType))
-      .map((r) => {
-        const m = r.triggerMetadata;
-        const trigger =
-          r.triggerType === 1
-            ? {
-                type: 'keyword',
-                keywords: m.keyword_filter ?? [],
-                regex_patterns: m.regex_patterns ?? [],
-                allow_list: m.allow_list ?? [],
-              }
-            : r.triggerType === 3
-              ? { type: 'spam' }
-              : r.triggerType === 4
-                ? {
-                    type: 'keyword_preset',
-                    presets: (m.presets ?? []).map((p) => presets[p]).filter(Boolean),
-                    allow_list: m.allow_list ?? [],
-                  }
-                : {
-                    type: 'mention_spam',
-                    mention_total_limit: m.mention_total_limit ?? 5,
-                    raid_protection: m.mention_raid_protection_enabled ?? false,
-                  };
-        const actions = r.actions
-          .map((a) =>
-            a.type === 1
-              ? {
-                  type: 'block_message',
-                  ...(a.metadata?.custom_message ? { custom_message: a.metadata.custom_message } : {}),
-                }
-              : a.type === 2 && a.metadata?.channel_id
-                ? { type: 'alert', channel: chRef(a.metadata.channel_id) }
-                : a.type === 3 && a.metadata?.duration_seconds
-                  ? { type: 'timeout', duration_seconds: a.metadata.duration_seconds }
-                  : null,
-          )
-          .filter(Boolean);
-        return {
+    const skipped = (r: AutoModRuleInfo, why: string) => {
+      notes.push(`AutoMod rule "${r.name}" was not exported: ${why}. steward leaves it as it is`);
+      return [];
+    };
+    // Export what is there, never a default in its place: planning the export
+    // against the same server must find nothing to change.
+    const rules = input.automodRules.flatMap((r) => {
+      if (![1, 3, 4, 5].includes(r.triggerType))
+        return skipped(
+          r,
+          `blueprints cannot describe its ${AUTOMOD_TRIGGERS[r.triggerType] ?? `type ${r.triggerType}`} trigger`,
+        );
+      const m = r.triggerMetadata;
+      const presetNames = (m.presets ?? []).map((p) => presets[p]);
+      if (r.triggerType === 4 && (presetNames.length === 0 || presetNames.some((p) => !p)))
+        return skipped(
+          r,
+          `it uses keyword presets blueprints cannot name (${(m.presets ?? []).join(', ') || 'none'})`,
+        );
+      const modelled = r.actions.filter(isModelledAction);
+      if (modelled.length === 0) return skipped(r, 'none of its actions can be written in a blueprint');
+      const extra = unmodelledActions(r);
+      if (extra.length > 0) {
+        notes.push(
+          `AutoMod rule "${r.name}" has ${extra.length} action(s) blueprints cannot describe (type ${[...new Set(extra.map((a) => a.type))].join(', ')}); they are left out of the blueprint and applying it keeps them`,
+        );
+      }
+      const trigger =
+        r.triggerType === 1
+          ? {
+              type: 'keyword',
+              keywords: m.keyword_filter ?? [],
+              regex_patterns: m.regex_patterns ?? [],
+              allow_list: m.allow_list ?? [],
+            }
+          : r.triggerType === 3
+            ? { type: 'spam' }
+            : r.triggerType === 4
+              ? { type: 'keyword_preset', presets: presetNames, allow_list: m.allow_list ?? [] }
+              : {
+                  type: 'mention_spam',
+                  ...(m.mention_total_limit !== undefined
+                    ? { mention_total_limit: m.mention_total_limit }
+                    : {}),
+                  raid_protection: m.mention_raid_protection_enabled === true,
+                };
+      const actions = modelled.map((a) =>
+        a.type === 1
+          ? {
+              type: 'block_message',
+              ...(a.metadata?.custom_message ? { custom_message: a.metadata.custom_message } : {}),
+            }
+          : a.type === 2
+            ? { type: 'alert', channel: chRef(a.metadata!.channel_id!) }
+            : { type: 'timeout', duration_seconds: a.metadata!.duration_seconds },
+      );
+      return [
+        {
           key: keys.key('automod', r.id, r.name, 'automod'),
           name: r.name,
           enabled: r.enabled,
@@ -269,13 +288,9 @@ export function exportBlueprint(input: ExportInput): ExportResult {
           actions,
           exempt_roles: r.exemptRoles.map(roleRef),
           exempt_channels: r.exemptChannels.map((id) => chRef(id)),
-        };
-      });
-    const other = input.automodRules.length - rules.length;
-    if (other > 0)
-      notes.push(
-        `${other} AutoMod rule(s) of unsupported trigger types (for example member profile rules) were not exported`,
-      );
+        },
+      ];
+    });
     if (rules.length > 0) bp.automod = rules;
   } else {
     notes.push('AutoMod rules were not exported: the bot needs Manage Server to read them');

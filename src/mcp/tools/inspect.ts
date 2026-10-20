@@ -12,6 +12,7 @@ import {
   permissionNames,
   permissionsFromNames,
   roleById,
+  rolesOutOfBotReach,
   rolesTopDown,
 } from '../../discord/permissions.js';
 import type { ChannelInfo, GuildSnapshot, RoleInfo } from '../../discord/types.js';
@@ -75,13 +76,9 @@ function roleSummary(s: GuildSnapshot, r: RoleInfo, keys: Map<string, string>) {
 
 function botReport(s: GuildSnapshot) {
   const bot = botStanding(s);
-  const above = rolesTopDown(s).filter(
-    (r) =>
-      bot.highestRole &&
-      r.id !== bot.highestRole.id &&
-      r.position >= bot.highestPosition &&
-      r.id !== s.guild.id,
-  );
+  // Same test the plans and mutations use: Discord's order, with the id
+  // tie-breaker, not a raw position comparison.
+  const above = rolesOutOfBotReach(s);
   const key = (bit: bigint) => has(bot.permissions, bit);
   const warnings: string[] = [];
   if (above.length > 0) {

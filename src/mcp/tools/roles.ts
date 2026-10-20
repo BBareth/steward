@@ -7,13 +7,14 @@ import {
   P,
   permissionNames,
   permissionsFromNames,
+  ranksBelowBot,
   roleById,
   rolesTopDown,
 } from '../../discord/permissions.js';
 import type { RoleWriteBody } from '../../discord/types.js';
 import { colorSchema, parseColor } from '../../features/messages.js';
 import { runOperation } from '../../ops/journal.js';
-import { rolePositionUpdates } from '../../ops/ordering.js';
+import { roleOrderPlan } from '../../ops/ordering.js';
 import { StewardError } from '../../util/errors.js';
 import { KEY_RE } from '../../blueprint/schema.js';
 import { defineTool } from '../registry.js';
@@ -65,7 +66,7 @@ export const roleTools = [
       const anchor = a.place_below_role_id
         ? requireFound(roleById(s, a.place_below_role_id), `role ${a.place_below_role_id}`)
         : null;
-      if (anchor && anchor.position > bot.highestPosition) {
+      if (anchor && anchor.id !== bot.highestRole?.id && !ranksBelowBot(s, anchor)) {
         throw new StewardError(
           'precondition_failed',
           `cannot place a role below "${anchor.name}": it is above the bot's highest role`,
@@ -96,6 +97,7 @@ export const roleTools = [
         if (a.key) call.app.store.setMapping(a.guild_id, 'role', a.key, id, 'manual');
         if (a.staff) call.app.store.addProtectedRole(a.guild_id, id);
         let moved: string | undefined;
+        let placement: { placed: boolean; reason?: string } | undefined;
         if (anchor) {
           // Insert the new role directly under the anchor; the roles in between
           // shift down one slot each, and nothing outside that range moves.
@@ -103,19 +105,34 @@ export const roleTools = [
           const order = rolesTopDown(fresh).map((r) => r.id);
           const from = order.indexOf(anchor.id);
           const to = order.indexOf(id);
-          if (from >= 0 && to > from + 1) {
+          if (from >= 0 && to === from + 1) {
+            placement = { placed: true };
+          } else if (from >= 0 && to > from + 1) {
             const between = order.slice(from + 1, to);
-            const updates = rolePositionUpdates(fresh, [anchor.id, id, ...between]);
-            if (updates.length) {
+            // The bot's own role never moves; directly below it means "top of
+            // the roles it manages".
+            const wanted = anchor.id === bot.highestRole?.id ? [id, ...between] : [anchor.id, id, ...between];
+            const plan = roleOrderPlan(fresh, wanted);
+            if (plan.blocker) {
+              placement = { placed: false, reason: plan.blocker };
+            } else if (plan.updates.length) {
               const o = await runOperation(ctx, {
                 action: 'reorder_roles',
                 resourceKind: 'role',
                 targetId: id,
                 summary: `place role ${a.name} below ${anchor.name}`,
                 idempotent: true,
-                run: (reason) => call.app.adapter.setRolePositions(a.guild_id, updates, reason),
+                run: (reason) => call.app.adapter.setRolePositions(a.guild_id, plan.updates, reason),
               });
               moved = o.opId;
+              const after = roleOrderPlan(await call.app.adapter.fetchSnapshot(a.guild_id), wanted);
+              placement = after.inOrder
+                ? { placed: true }
+                : {
+                    placed: false,
+                    reason:
+                      'Discord accepted the new positions but the role is not directly below the anchor',
+                  };
             }
           }
         }
@@ -124,6 +141,7 @@ export const roleTools = [
           role_id: id,
           status: out.status,
           position_op_id: moved,
+          placement,
           protected: a.staff ?? false,
         };
       });
@@ -202,16 +220,25 @@ export const roleTools = [
         const v = canBotManageRole(s, r, 'move');
         if (!v.ok) throw new StewardError('precondition_failed', `cannot move "${r.name}": ${v.reason}`);
       }
-      const updates = rolePositionUpdates(s, a.role_ids);
-      if (updates.length === 0) return { changed: 0, note: 'already in that order' };
+      const plan = roleOrderPlan(s, a.role_ids);
+      if (plan.inOrder) return { changed: 0, note: 'already in that order' };
+      if (plan.blocker)
+        throw new StewardError('precondition_failed', `cannot order these roles: ${plan.blocker}`);
       const out = await mutate(call, a.guild_id, a.reason, {
         action: 'reorder_roles',
         resourceKind: 'role',
         summary: `reorder ${a.role_ids.length} roles`,
         idempotent: true,
-        run: (reason) => call.app.adapter.setRolePositions(a.guild_id, updates, reason),
+        run: (reason) => call.app.adapter.setRolePositions(a.guild_id, plan.updates, reason),
       });
-      return { op_id: out.opId, changed: updates.length };
+      const after = roleOrderPlan(await call.app.adapter.fetchSnapshot(a.guild_id), a.role_ids);
+      if (!after.inOrder) {
+        throw new StewardError(
+          'precondition_failed',
+          `Discord accepted the new positions (operation ${out.opId}) but the roles are still out of order: ${after.currentOrder.map((id) => roleById(s, id)?.name ?? id).join(' > ')}`,
+        );
+      }
+      return { op_id: out.opId, changed: plan.updates.length };
     },
   }),
 

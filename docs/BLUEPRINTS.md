@@ -326,10 +326,21 @@ automod:
 
 Triggers: `keyword` (`keywords`, `regex_patterns`, `allow_list`), `spam`,
 `keyword_preset` (`presets`: `profanity`, `sexual_content`, `slurs`;
-`allow_list`), `mention_spam` (`mention_total_limit`, `raid_protection`).
-Discord allows six keyword rules and one of each other kind per server,
-counting rules steward does not manage. A rule cannot change its trigger type;
-the plan reports that as unsupported. Member-profile rules are not supported.
+`allow_list`), `mention_spam` (`mention_total_limit`, `raid_protection`;
+leave out `mention_total_limit` to keep the server's current limit, but a new
+rule needs it). Discord allows six keyword rules and one of each other kind
+per server, counting rules steward does not manage. A rule cannot change its
+trigger type; the plan reports that as unsupported. Member-profile rules are
+not supported.
+
+Updates send only the fields that differ from the live rule. Actions a
+blueprint cannot describe (newer Discord action types) are kept as they are,
+and the plan warns about them. Some rules are kept by Discord itself: they are
+listed, but Discord can answer 404 Not Found when a bot changes or deletes
+them. steward then fails that step with what it found (still listed, readable
+by id or not), never deletes or recreates the rule, and runs the steps that
+do not depend on it. Change such a rule in Server Settings → Safety Setup →
+AutoMod, or make the blueprint match it.
 
 ## Plans in detail
 

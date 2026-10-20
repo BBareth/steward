@@ -53,7 +53,9 @@ export type FaultMode =
   | 'forbidden'
   | 'not_found'
   | 'hang_before'
-  | 'hang_after';
+  | 'hang_after'
+  /** Report success but change nothing, as Discord sometimes does with positions. */
+  | 'ignored';
 
 interface Fault {
   method: string;
@@ -71,6 +73,13 @@ export interface MemoryAdapterOptions {
   botPermissions?: bigint;
   /** Position of the bot's role; roles at or above it cannot be managed. */
   botRolePosition?: number;
+  /**
+   * How role positions behave. 'discord' (default) matches what live Discord
+   * was seen doing: a new role lands on position 1 without renumbering anything,
+   * so several roles can share a position, and updates are stored as sent.
+   * 'normalised' renumbers every role 1..n after each change.
+   */
+  rolePositions?: 'discord' | 'normalised';
 }
 
 export class MemoryDiscordAdapter implements DiscordAdapter {
@@ -84,6 +93,11 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
   members = new Map<string, MemberInfo>();
   messages = new Map<string, MessageInfo & { body: MessageBody }>();
   automod = new Map<string, AutoModRuleInfo>();
+  /**
+   * Rules Discord keeps for itself: listed, but edits and deletes answer 404.
+   * 'hidden' rules also answer 404 when read by id.
+   */
+  nativeAutomod = new Map<string, 'readable' | 'hidden'>();
   audit: AuditLogEntry[] = [];
   calls: Array<{ method: string; args: unknown[] }> = [];
   private nonces = new Map<string, string>();
@@ -92,7 +106,7 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
   private state: ConnectionState = 'ready';
   private detail: string | null = null;
 
-  constructor(options: MemoryAdapterOptions = {}) {
+  constructor(private readonly options: MemoryAdapterOptions = {}) {
     this.guildId = options.guildId ?? makeSnowflake();
     this.guild = {
       id: this.guildId,
@@ -225,6 +239,27 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     return member;
   }
 
+  addAutoModRule(
+    spec: Partial<AutoModRuleInfo> & { name: string },
+    native?: 'readable' | 'hidden',
+  ): AutoModRuleInfo {
+    const rule: AutoModRuleInfo = {
+      id: makeSnowflake(),
+      eventType: 1,
+      triggerType: 1,
+      triggerMetadata: {},
+      actions: [{ type: 1 }],
+      enabled: true,
+      exemptRoles: [],
+      exemptChannels: [],
+      creatorId: this.ownerId,
+      ...spec,
+    };
+    this.automod.set(rule.id, rule);
+    if (native) this.nativeAutomod.set(rule.id, native);
+    return rule;
+  }
+
   setBotRolePosition(position: number): void {
     this.roles.get(this.botRoleId)!.position = position;
   }
@@ -323,6 +358,11 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
       throw new DiscordRequestError('server', 'Discord returned HTTP 502; the outcome is unknown', 502);
     if (mode === 'hang_after') await new Promise(() => {});
     return value;
+  }
+
+  /** Discord documents no JSON code for an unknown AutoMod rule, only the HTTP status. */
+  private notFound(): DiscordRequestError {
+    return new DiscordRequestError('http', 'Discord rejected the request: 404 Not Found', 404);
   }
 
   private forbid(why: string): never {
@@ -449,6 +489,14 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     return [...this.automod.values()].map(clone);
   }
 
+  async fetchAutoModRule(guildId: string, ruleId: string): Promise<AutoModRuleInfo | null> {
+    await this.enter('fetchAutoModRule', [guildId, ruleId]);
+    this.requireGuildPerm(P.ManageGuild, 'automod needs Manage Server');
+    const rule = this.automod.get(ruleId);
+    if (!rule || this.nativeAutomod.get(ruleId) === 'hidden') return null;
+    return clone(rule);
+  }
+
   async fetchMessage(channelId: string, messageId: string): Promise<MessageInfo | null> {
     await this.enter('fetchMessage', [channelId, messageId]);
     const m = this.messages.get(messageId);
@@ -541,7 +589,7 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
   async setChannelPositions(guildId: string, updates: PositionUpdate[], reason: string): Promise<void> {
     const mode = await this.enter('setChannelPositions', [guildId, updates, reason]);
     this.requireGuildPerm(P.ManageChannels, 'reordering needs Manage Channels');
-    for (const u of updates) this.requireChannel(u.id).position = u.position;
+    if (mode !== 'ignored') for (const u of updates) this.requireChannel(u.id).position = u.position;
     return this.leave(mode, undefined);
   }
 
@@ -582,7 +630,9 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     const perms = body.permissions !== undefined ? BigInt(body.permissions) : 0n;
     if (!bot.isAdmin && (perms & ~bot.permissions) !== 0n)
       this.forbid('cannot grant permissions the bot does not hold');
-    for (const r of this.roles.values()) if (r.id !== this.guildId && r.position >= 1) r.position += 1;
+    if (this.options.rolePositions === 'normalised') {
+      for (const r of this.roles.values()) if (r.id !== this.guildId && r.position >= 1) r.position += 1;
+    }
     const role: RoleInfo = {
       id: makeSnowflake(),
       name: body.name ?? 'new role',
@@ -628,7 +678,7 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     this.roles.delete(roleId);
     for (const m of this.members.values()) m.roleIds = m.roleIds.filter((id) => id !== roleId);
     for (const c of this.channels.values()) c.overwrites = c.overwrites.filter((o) => o.id !== roleId);
-    this.normaliseRolePositions();
+    if (this.options.rolePositions === 'normalised') this.normaliseRolePositions();
     this.audit_(32, roleId, reason);
     return this.leave(mode, undefined);
   }
@@ -641,10 +691,13 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
       const role = this.requireRole(u.id);
       const verdict = canBotManageRole(snap, role, 'move');
       if (!verdict.ok) this.forbid(verdict.reason!);
-      if (u.position >= bot.highestPosition) this.forbid('cannot move a role to or above the bot');
+      if (!bot.highestRole || u.position >= bot.highestRole.position) {
+        this.forbid('cannot move a role to or above the bot');
+      }
     }
+    if (mode === 'ignored') return this.leave(mode, undefined);
     for (const u of updates) this.requireRole(u.id).position = u.position;
-    this.normaliseRolePositions();
+    if (this.options.rolePositions === 'normalised') this.normaliseRolePositions();
     return this.leave(mode, undefined);
   }
 
@@ -794,13 +847,7 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     const mode = await this.enter('editAutoModRule', [guildId, ruleId, body, reason]);
     this.requireGuildPerm(P.ManageGuild, 'automod needs Manage Server');
     const rule = this.automod.get(ruleId);
-    if (!rule)
-      throw new DiscordRequestError(
-        'http',
-        'Discord rejected the request: Unknown Auto Moderation Rule',
-        404,
-        10066,
-      );
+    if (!rule || this.nativeAutomod.has(ruleId)) throw this.notFound();
     if (body.name !== undefined) rule.name = body.name;
     if (body.event_type !== undefined) rule.eventType = body.event_type;
     if (body.trigger_metadata !== undefined) rule.triggerMetadata = clone(body.trigger_metadata);
@@ -814,14 +861,7 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
   async deleteAutoModRule(guildId: string, ruleId: string, reason: string): Promise<void> {
     const mode = await this.enter('deleteAutoModRule', [guildId, ruleId, reason]);
     this.requireGuildPerm(P.ManageGuild, 'automod needs Manage Server');
-    if (!this.automod.delete(ruleId)) {
-      throw new DiscordRequestError(
-        'http',
-        'Discord rejected the request: Unknown Auto Moderation Rule',
-        404,
-        10066,
-      );
-    }
+    if (this.nativeAutomod.has(ruleId) || !this.automod.delete(ruleId)) throw this.notFound();
     return this.leave(mode, undefined);
   }
 

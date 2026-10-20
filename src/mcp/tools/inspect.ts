@@ -5,6 +5,7 @@ import {
   botStanding,
   canBotManageRole,
   channelPermissions,
+  compareRoles,
   basePermissions,
   ELEVATED_PERMISSIONS,
   has,
@@ -375,7 +376,7 @@ export const inspectTools = [
         roles: m.roleIds
           .map((id) => roleById(s, id))
           .filter((r): r is RoleInfo => !!r)
-          .sort((x, y) => y.position - x.position)
+          .sort((x, y) => compareRoles(y, x))
           .map((r) => {
             const v = canBotManageRole(s, r, 'assign');
             return { id: r.id, name: r.name, position: r.position, bot_can_remove: v.ok ? true : v.reason };

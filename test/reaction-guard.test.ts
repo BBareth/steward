@@ -62,6 +62,7 @@ describe('which reactions go', () => {
     ['own_reaction', facts, { ...event, userId: event.botUserId! }],
     ['author_unknown', { ...facts, authorId: null }, event],
     ['not_steward_message', { ...facts, authorId: '100000000000000077' }, event],
+    ['owner_unknown', facts, { ...event, guildOwnerId: null }],
     ['guild_owner', facts, { ...event, userId: event.guildOwnerId! }],
     ['member_unknown', { ...facts, member: null }, event],
     ['bot', { ...facts, member: { roleIds: [], isBot: true } }, event],
@@ -504,6 +505,14 @@ describe('gateway to REST', () => {
     client.emit('raw', packet({ message_author_id: MEMBER }), 0);
     client.emit('raw', packet({ user_id: OWNER, member: { roles: [], user: { id: OWNER } } }), 0);
     await vi.waitFor(() => expect(guard.stats.kept).toBe(2));
+    expect(client.routes).toEqual([]);
+  });
+
+  test('a server missing from the session cache keeps its reactions, since its owner is unknown', async () => {
+    const { client, guard } = await realAdapter(true);
+    client.guilds.cache.delete(GUILD);
+    client.emit('raw', packet(), 0);
+    await vi.waitFor(() => expect(guard.stats.kept).toBe(1));
     expect(client.routes).toEqual([]);
   });
 

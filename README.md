@@ -252,8 +252,9 @@ members holding a role bound to the blueprint key `owner`, `admin`,
 `moderator` or `bot`. Reactions on anyone else's messages, other bots'
 messages and webhook posts are never touched, and role-panel buttons keep
 working (they are buttons, not reactions). When it cannot tell who wrote a
-message or who reacted, it leaves the reaction. It needs Manage Messages in
-those channels; where Discord refuses, it pauses that channel for ten minutes
+message, who reacted or who owns the server, it leaves the reaction. It needs
+Manage Messages in those channels; where Discord refuses, it pauses that
+channel for ten minutes
 (the whole server when Discord wants two-factor authentication on the bot
 owner's account).
 Removals are in `list_history` under the tool `reaction_guard` (Discord's own

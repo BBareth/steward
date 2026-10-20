@@ -48,6 +48,7 @@ export type KeepReason =
   | 'own_reaction'
   | 'author_unknown'
   | 'not_steward_message'
+  | 'owner_unknown'
   | 'guild_owner'
   | 'member_unknown'
   | 'bot'
@@ -75,6 +76,8 @@ export function decideReaction(event: ReactionAddEvent, facts: GuardFacts): Guar
   if (event.userId === event.botUserId) return keep('own_reaction');
   if (!facts.authorId) return keep('author_unknown');
   if (facts.authorId !== event.botUserId) return keep('not_steward_message');
+  // Without the guild in the session's cache the owner cannot be told apart.
+  if (!event.guildOwnerId) return keep('owner_unknown');
   if (event.userId === event.guildOwnerId) return keep('guild_owner');
   if (!facts.member) return keep('member_unknown');
   if (facts.member.isBot) return keep('bot');

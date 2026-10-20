@@ -325,6 +325,17 @@ describe('hierarchy with equal positions', () => {
     });
     expect(refused.data.error.code).toBe('precondition_failed');
 
+    // Listed in Discord's order (the tie broken by id), with the same verdicts.
+    const holder = env.adapter.addMember({ roleIds: [below.id, env.adapter.botRoleId, above.id] });
+    const member = await call<{ roles: Array<{ name: string; bot_can_remove: true | string }> }>(
+      client,
+      'get_member',
+      { guild_id, user_id: holder.userId },
+    );
+    expect(member.data.roles.map((r) => r.name)).toEqual(['Tied older', 'Steward', 'Tied newer']);
+    expect(member.data.roles[0]!.bot_can_remove).toMatch(/at or above the bot's highest role/);
+    expect(member.data.roles[2]!.bot_can_remove).toBe(true);
+
     const underTied = await call<{ role_id: string; placement: { placed: boolean } }>(client, 'create_role', {
       guild_id,
       name: 'Under tied',

@@ -45,8 +45,9 @@ First version. Not yet released or published as an image.
   in read-only mode): removes ordinary members' reactions from messages
   steward posted, including uncached ones, using only the non-privileged Guild
   Message Reactions intent. Bots, the server owner and roles bound to `owner`,
-  `admin`, `moderator` and `bot` are exempt; `steward_status` reports whether
-  it is active.
+  `admin`, `moderator` and `bot` are exempt, and a reaction stays whenever
+  steward cannot tell who wrote the message, who reacted or who owns the
+  server; `steward_status` reports whether it is active.
 
 ### Fixed
 - Role ordering with tied positions. Discord lets roles share a position and
@@ -58,6 +59,7 @@ First version. Not yet released or published as an image.
 - Hierarchy warnings in `get_guild_overview` and `create_role` compared raw
   positions while checks and writes used the id tie-breaker, so a role sharing
   the bot's position could be reported as both manageable and not.
+  `get_member` also lists roles in Discord's order now.
 - AutoMod: export no longer invents a mention limit or drops actions it cannot
   describe, so an exported server re-plans to nothing. Updates send only the
   fields that differ and keep actions steward does not model. A 404 on a rule
@@ -70,11 +72,11 @@ First version. Not yet released or published as an image.
   Community; forums are planned with a warning instead. Turning Community on
   needs Administrator, and its prerequisites are checked on the values the
   server will have.
-
 - Publishing: `latest` now moves only for the newest release tag. Before,
   the metadata action also tagged every other release (so re-running or
   backporting an older tag moved `latest` back) and the newest-tag check
-  counted pre-releases.
+  counted pre-releases. `edge` is tagged for pushes to `main` itself rather
+  than to the repository's default branch, which can be another branch.
 
 ### Documentation
 - Updating versus restarting: what `restart`, `up -d`, `pull` and `--build`

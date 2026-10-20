@@ -100,7 +100,7 @@ Messages can remove, so the reaction guard's own exemptions (bots, the server
 owner, roles bound to `owner`, `admin`, `moderator`, `bot`) are what protects
 staff. It acts only on messages steward's bot user wrote, only in the
 configured servers, and keeps a reaction whenever it cannot establish the
-author or the member.
+author, the member or the server owner.
 
 ## Reporting a vulnerability
 

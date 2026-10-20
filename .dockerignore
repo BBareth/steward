@@ -1,0 +1,15 @@
+.git
+.github
+node_modules
+dist
+coverage
+data
+docs
+test
+examples
+*.db
+*.db-*
+.env
+.env.*
+tokens.json
+*.md

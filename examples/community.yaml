@@ -1,0 +1,261 @@
+# A complete community server: public channels, read-only announcements,
+# a private staff area, self-assigned roles, a welcome flow and AutoMod.
+# Walkthrough: docs/BLUEPRINTS.md
+version: 1
+name: Community starter
+description: A friendly general-purpose community with a private staff area.
+
+settings:
+  verification_level: medium
+  default_notifications: only_mentions
+  explicit_content_filter: all_members
+  community: true
+  rules_channel: rules
+  public_updates_channel: mod-updates
+  system_channel: mod-log
+  system_channel_flags:
+    suppress_join_notifications: true # steward posts its own welcome message
+    suppress_guild_reminders: true
+  afk_channel: afk
+  afk_timeout: 900
+
+everyone:
+  permissions:
+    - ViewChannel
+    - SendMessages
+    - SendMessagesInThreads
+    - CreatePublicThreads
+    - ReadMessageHistory
+    - AddReactions
+    - EmbedLinks
+    - AttachFiles
+    - UseExternalEmojis
+    - UseApplicationCommands
+    - ChangeNickname
+    - Connect
+    - Speak
+    - Stream
+    - UseVAD
+
+# Top to bottom, as they appear in Server Settings -> Roles.
+roles:
+  - key: admin
+    name: Admin
+    color: '#e74c3c'
+    hoist: true
+    permissions: [Administrator]
+    staff: true
+  - key: moderator
+    name: Moderator
+    color: '#3498db'
+    hoist: true
+    mentionable: true
+    permissions:
+      [
+        KickMembers,
+        BanMembers,
+        ModerateMembers,
+        ManageMessages,
+        ManageThreads,
+        ManageNicknames,
+        MuteMembers,
+        MoveMembers,
+        ViewAuditLog,
+      ]
+    staff: true
+  - key: member
+    name: Member
+    color: '#2ecc71'
+    permissions: []
+  - key: announcements-ping
+    name: Announcements
+  - key: events-ping
+    name: Events
+  - key: he-him
+    name: he/him
+  - key: she-her
+    name: she/her
+  - key: they-them
+    name: they/them
+  - key: gamer
+    name: Gamer
+    color: '#9b59b6'
+  - key: artist
+    name: Artist
+    color: '#f1c40f'
+
+categories:
+  - key: info
+    name: Information
+    access:
+      read_only: true
+      writers: [admin, moderator]
+    channels:
+      - key: welcome
+        name: welcome
+        topic: Start here.
+      - key: rules
+        name: rules
+        topic: Read these before posting.
+      - key: announcements
+        name: announcements
+        type: announcement
+        topic: News from the team.
+      - key: roles
+        name: roles
+        topic: Pick your pronouns, pings and interests.
+
+  - key: community
+    name: Community
+    channels:
+      - key: general
+        name: general
+        topic: Talk about anything.
+      - key: introductions
+        name: introductions
+        topic: Say hello.
+        slowmode_seconds: 60
+      - key: media
+        name: media
+        topic: Screenshots, art and clips.
+        slowmode_seconds: 10
+      - key: gaming
+        name: gaming
+        # Only people with the Gamer role see this one.
+        access:
+          private: true
+          visible_to: [gamer, moderator, admin]
+      - key: lounge
+        name: Lounge
+        type: voice
+      - key: game-night
+        name: Game Night
+        type: voice
+        user_limit: 10
+
+  - key: events
+    name: Events
+    channels:
+      - key: event-info
+        name: event-info
+        access:
+          read_only: true
+          writers: [moderator, admin]
+      - key: town-hall
+        name: Town Hall
+        type: stage
+
+  - key: staff
+    name: Staff
+    access:
+      private: true
+      visible_to: [moderator, admin]
+    channels:
+      - key: staff-chat
+        name: staff-chat
+      - key: mod-log
+        name: mod-log
+        topic: AutoMod alerts and join notices.
+      - key: mod-updates
+        name: mod-updates
+        topic: Discord's Community updates for moderators.
+      - key: staff-voice
+        name: Staff Voice
+        type: voice
+
+  - key: voice
+    name: Voice
+    channels:
+      - key: afk
+        name: AFK
+        type: voice
+
+messages:
+  - key: rules-post
+    channel: rules
+    embeds:
+      - title: Server rules
+        color: '#e74c3c'
+        description: |
+          1. Be kind. No harassment, hate speech or personal attacks.
+          2. Keep it safe for work outside channels marked otherwise.
+          3. No spam, advertising or unsolicited DMs.
+          4. Use the right channel; keep threads on topic.
+          5. Follow Discord's Terms of Service and Community Guidelines.
+
+          Moderators may remove content or members that break these rules.
+        footer:
+          text: Questions? Ask a Moderator.
+  - key: start-here
+    channel: welcome
+    embeds:
+      - title: Welcome!
+        color: '#2ecc71'
+        description: |
+          Read the rules channel first, then pick up roles in the roles channel.
+          Say hello in introductions once you're settled.
+
+welcome:
+  enabled: true
+  channel: general
+  message:
+    content: 'Welcome {user} to **{server}**! You are member #{member_count}. Have a look at the rules and roles channels to get started.'
+  join_roles: [member]
+
+self_roles:
+  # The allowlist. Nothing else can ever be self-assigned, and steward refuses
+  # any role here that carries moderation or admin power.
+  roles: [announcements-ping, events-ping, he-him, she-her, they-them, gamer, artist]
+  panels:
+    - key: pings
+      channel: roles
+      title: Notifications
+      description: Choose what you want to be pinged for.
+      options:
+        - { role: announcements-ping, label: Announcements, emoji: '📣', style: primary }
+        - { role: events-ping, label: Events, emoji: '🎉', style: primary }
+    - key: pronouns
+      channel: roles
+      title: Pronouns
+      mode: single
+      options:
+        - { role: he-him, label: he/him }
+        - { role: she-her, label: she/her }
+        - { role: they-them, label: they/them }
+    - key: interests
+      channel: roles
+      title: Interests
+      description: Unlocks the matching channels.
+      options:
+        - { role: gamer, label: Gaming, emoji: '🎮', style: success }
+        - { role: artist, label: Art, emoji: '🎨', style: success }
+
+automod:
+  - key: block-invites
+    name: Block invite links
+    trigger:
+      type: keyword
+      regex_patterns: ['discord(?:\.gg|(?:app)?\.com/invite)/\S+']
+    actions:
+      - { type: block_message, custom_message: 'Invite links are not allowed here.' }
+      - { type: alert, channel: mod-log }
+    exempt_roles: [moderator, admin]
+  - key: spam
+    name: Block suspected spam
+    trigger: { type: spam }
+    actions:
+      - { type: block_message }
+      - { type: alert, channel: mod-log }
+  - key: mention-spam
+    name: Mention spam
+    trigger: { type: mention_spam, mention_total_limit: 6, raid_protection: true }
+    actions:
+      - { type: block_message }
+      - { type: timeout, duration_seconds: 600 }
+      - { type: alert, channel: mod-log }
+    exempt_roles: [moderator, admin]
+  - key: slurs
+    name: Block slurs
+    trigger: { type: keyword_preset, presets: [slurs] }
+    actions:
+      - { type: block_message }

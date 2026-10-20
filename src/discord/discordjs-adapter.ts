@@ -143,7 +143,7 @@ const MAX_AUDIT_REASON = 512;
  */
 export function truncateReason(reason: string): string {
   // Lone surrogates (possible in user-supplied JSON strings) would throw too.
-  const text = reason.replace(/\p{Cs}/gu, '�');
+  const text = reason.replace(/\p{Cs}/gu, '\uFFFD');
   if (encodeURIComponent(text).length <= MAX_AUDIT_REASON) return text;
   const budget = MAX_AUDIT_REASON - '...'.length;
   let used = 0;

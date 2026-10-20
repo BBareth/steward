@@ -159,7 +159,7 @@ describe('audit-log reasons', () => {
   });
 
   test('lone surrogates are replaced instead of throwing', () => {
-    expect(truncateReason(reason('a\uD83Cb'))).toBe(reason('a�b'));
+    expect(truncateReason(reason('a\uD83Cb'))).toBe(reason('a\uFFFDb'));
   });
 });
 

@@ -8,9 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 First version. Not yet released or published as an image.
 
 ### Added
+- `check_bot_setup`: read-only checks for another bot's membership, required
+  server/channel permissions and assignable roles, with hierarchy blockers,
+  explicit unverified channels and a documented agent setup workflow.
 - One container running a discord.js bot and an MCP server over authenticated
   Streamable HTTP at `/mcp`, with `/healthz` and `/readyz`.
-- 45 typed MCP tools to inspect servers, channels, roles, members, permission
+- 46 typed MCP tools to inspect servers, channels, roles, members, permission
   overwrites and AutoMod; to create, edit, order and delete channels,
   categories and roles; to assign roles; to set overwrites and private/read-only
   presets; to update server settings; to post and edit bot-owned messages; and

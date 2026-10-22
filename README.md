@@ -189,12 +189,12 @@ community server ([`examples/community.yaml`](./examples/community.yaml)).
 
 ## Tools
 
-45 typed tools; each credential only sees the ones its scopes allow.
+46 typed tools; each credential only sees the ones its scopes allow.
 
 | Group | Tools | Scope |
 | --- | --- | --- |
 | Status | `steward_status`, `blueprint_reference`, `generate_invite_link` | read |
-| Inspect | `get_guild_overview`, `list_channels`, `get_channel`, `list_roles`, `get_role`, `get_member`, `check_permissions`, `check_role_hierarchy`, `list_automod_rules`, `get_message`, `get_bot_features`, `list_mappings`, `list_history` | read |
+| Inspect | `get_guild_overview`, `list_channels`, `get_channel`, `list_roles`, `get_role`, `get_member`, `check_permissions`, `check_role_hierarchy`, `check_bot_setup`, `list_automod_rules`, `get_message`, `get_bot_features`, `list_mappings`, `list_history` | read |
 | Blueprints | `validate_blueprint`, `export_blueprint`, `plan_blueprint`, `get_plan`, `get_apply_status`, `verify_blueprint` | read |
 | | `apply_plan`, `map_resource` | write |
 | Channels | `create_channel`, `update_channel`, `reorder_channels`, `set_channel_permissions`, `configure_channel_access` | write |
@@ -300,6 +300,18 @@ away. A channel steward has never managed and cannot see is invisible to it
 entirely: it is not exported, cannot be adopted by name, does not trigger the
 name-collision warning and is never pruned. Plans warn when the bot lacks View
 Channel server-wide.
+
+## Setting up another bot
+
+`check_bot_setup` checks an installed bot against the permissions, channels and
+assignable roles you specify. It reports missing permissions, channel overrides,
+hierarchy blockers (including tied positions), managed roles that cannot be
+assigned, and whether steward can reposition the bot role. It works with a
+read-only credential and changes nothing in Discord.
+
+Use `generate_invite_link` for the install, existing role/channel tools for the
+server setup, then check again. Vendor settings still need the bot's own API,
+dashboard or commands. [docs/BOTS.md](./docs/BOTS.md) has the agent workflow.
 
 ## What steward cannot do
 

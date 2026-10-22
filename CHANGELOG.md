@@ -88,6 +88,10 @@ First version. Not yet released or published as an image.
   backporting an older tag moved `latest` back) and the newest-tag check
   counted pre-releases. `edge` is tagged for pushes to `main` itself rather
   than to the repository's default branch, which can be another branch.
+- Audit-log reasons are cut to Discord's 512-character limit as measured after
+  URL encoding, where a space costs 3 characters and an emoji 12, instead of
+  to 500 raw characters. The cut keeps whole code points and the leading
+  operation ID that reconciliation searches for.
 
 ### Documentation
 - Updating versus restarting: what `restart`, `up -d`, `pull` and `--build`

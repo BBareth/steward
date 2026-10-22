@@ -64,6 +64,8 @@ First version. Not yet released or published as an image.
   it could not see.
 
 ### Fixed
+- CI dependency installation no longer waits for the optional npm audit
+  endpoint; it uses the same install flags as the Docker build.
 - Role ordering with tied positions. Discord lets roles share a position and
   breaks ties by id; the planner saw a difference that the executor could not
   express, so apply reported "already in order" while verify still differed.

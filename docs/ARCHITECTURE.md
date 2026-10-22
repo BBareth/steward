@@ -108,7 +108,10 @@ mappings and steward's local state. It:
 
 1. Resolves every key to an existing ID or "to be created". A same-named
    unmanaged resource is never adopted silently; the plan warns and, with
-   `adopt_by_name`, binds it explicitly.
+   `adopt_by_name`, binds it explicitly. Discord's channel list omits channels
+   the bot cannot view (from 2026-11-16), so a mapped channel missing from it
+   is read by ID first: a 404 means deleted (create it again), a 403 means it
+   exists but is hidden, and every step that needs it is blocked instead.
 2. Diffs only the fields the blueprint sets. A role without `permissions`
    keeps its permissions; a channel without `permissions`/`access` (and no
    category to sync from) keeps its overwrites.
@@ -177,9 +180,10 @@ goes through `runOperation`:
      idempotent requests.
    - **Creates** (channels, roles, AutoMod rules) have no idempotency key on
      Discord. steward waits briefly and looks for the result: first in the
-     audit log for its operation ID, then (without View Audit Log) for a
-     resource with the same name, type and parent created after the request
-     started and not bound to any key. Found once: adopted, `recovered`. Not
+     audit log for its operation ID (for a channel the bot cannot view, which
+     the channel list leaves out, by reading the logged ID), then (without View
+     Audit Log) for a resource with the same name, type and parent created
+     after the request started and not bound to any key. Found once: adopted, `recovered`. Not
      found: sent once more. Found several times: `uncertain`, and the run stops
      — steward will not guess. `map_resource` resolves it.
 5. If the process dies mid-request, startup marks `in_progress` rows

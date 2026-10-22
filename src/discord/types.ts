@@ -47,6 +47,15 @@ export interface ChannelInfo {
   overwrites: Overwrite[];
 }
 
+/**
+ * One channel read by id. `hidden`: Discord answered 403, so the channel
+ * exists but the bot lacks View Channel there. `missing`: 404, it is gone.
+ */
+export type ChannelLookup =
+  | { status: 'visible'; channel: ChannelInfo; guildId: string | null }
+  | { status: 'hidden' }
+  | { status: 'missing' };
+
 export interface RoleTags {
   botId?: string;
   integrationId?: string;

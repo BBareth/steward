@@ -53,6 +53,38 @@ something that already exists, use one of:
 Without one of these, a plan that finds an unbound resource with the same name
 creates a new one and warns you about the collision.
 
+### Channels the bot cannot see
+
+From 16 November 2026 Discord does not list channels the bot lacks View
+Channel on (Administrator sees everything). A channel bound to a key that is
+missing from the list is therefore not assumed deleted. steward asks Discord
+for it by ID:
+
+- **404**: it was deleted. The plan creates it again and warns
+  (`mapped_resource_missing`), as before.
+- **403**: it still exists, but the bot cannot see it. steward cannot read,
+  compare or change it, so the plan has a blocked step for it,
+  `manage channel "<key>" (<id>), which the bot cannot see`, and keeps the
+  binding. It never plans a replacement. Steps that need the channel are
+  blocked with the same reason: messages and role panels in it, channels to
+  create in a category the bot cannot see, moves into it, settings and AutoMod
+  rules that would change to point at it, and pruning it. A setting that
+  already points at it and stays the same (a Community rules channel, say)
+  blocks nothing. `verify_blueprint` does not report the server in sync.
+- Any other error stops the plan, so it is never computed from a guess.
+
+To fix it, allow View Channel for the bot's role in that channel. Where
+steward posted messages or panels, allow Read Message History too. Then plan
+again. Private channels and categories steward creates keep the bot's own
+access (see [Access presets](#access-presets)), so this only happens when
+someone removes it. `apply_plan` with `accept_blocked: true` applies everything
+else in the meantime.
+
+steward cannot see a channel it has never managed and cannot view. Such a
+channel is not exported, does not trigger the `name_collision` warning, cannot
+be adopted by name and is never pruned. If the bot lacks View Channel
+server-wide, plans warn (`bot_cannot_view_channels`).
+
 ## What is managed
 
 Only what you write down. A role without `permissions` keeps whatever it has;
@@ -74,8 +106,11 @@ separate, explicit choice on the plan:
 `prune_unmanaged: true` extends pruning to resources steward never managed —
 everything in the server the blueprint does not mention. `@everyone`,
 integration roles, the bot's roles and protected staff roles are never pruned
-that way. Plans with deletions need `ALLOW_DESTRUCTIVE=true` on the server and a
-credential with the `destructive` scope.
+that way. A managed channel the bot cannot see is never deleted: `prune.channels`
+lists it as a blocked deletion
+([Channels the bot cannot see](#channels-the-bot-cannot-see)). Plans with
+deletions need `ALLOW_DESTRUCTIVE=true` on the server and a credential with the
+`destructive` scope.
 
 ## Format
 
@@ -364,11 +399,12 @@ A plan returns:
 - `steps` — one line each, in execution order, marked `[destructive]` or
   `[BLOCKED: reason]`; `detail: "full"` returns every field and change;
 - `blocked` — steps that cannot run, with the fix (hierarchy, missing
-  permission, a privileged role in a safe-role list, …);
+  permission, a privileged role in a safe-role list, a managed channel the
+  bot cannot see, …);
 - `unsupported` — things Discord does not allow (type changes, Community-only
   channels without Community, ambiguous adoptions);
 - `warnings` — name collisions, unmanaged overwrites, mapped resources deleted
-  by hand, missing intents;
+  by hand, missing intents, a bot without View Channel server-wide;
 - `next` — what to do now.
 
 `apply_plan` options:

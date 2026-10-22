@@ -115,13 +115,18 @@ export async function reconcileCreate(
       : snap.channels.map((c) => ({ id: c.id, name: c.name, type: c.type, parentId: c.parentId }));
   };
   const items = await exists();
+  let hit: string | null = null;
   try {
     const entries = await adapter.fetchAuditLog(guildId, AUDIT_ACTIONS[match.kind], 50);
-    const hit = entries.find((e) => e.targetId && e.reason?.includes(opId));
-    if (hit && items.some((i) => i.id === hit.targetId)) return { found: hit.targetId!, via: 'audit_log' };
+    hit = entries.find((e) => e.targetId && e.reason?.includes(opId))?.targetId ?? null;
   } catch {
     // No View Audit Log permission, or the audit log is unavailable: fall back.
   }
+  if (hit && items.some((i) => i.id === hit)) return { found: hit, via: 'audit_log' };
+  // The channel list leaves out channels the bot cannot view, and a new one
+  // can be such a channel. Retrying would create it twice.
+  if (hit && match.kind === 'channel' && (await adapter.fetchChannel(hit)).status !== 'missing')
+    return { found: hit, via: 'audit_log' };
   const candidates = items.filter(
     (i) =>
       i.name === match.name &&

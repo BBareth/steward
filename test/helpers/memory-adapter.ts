@@ -18,6 +18,7 @@ import type {
   AutoModRuleInfo,
   AutoModWriteBody,
   ChannelInfo,
+  ChannelLookup,
   ChannelWriteBody,
   ConnectionState,
   ConnectionStatus,
@@ -37,7 +38,8 @@ import { DiscordRequestError } from '../../src/util/errors.js';
 /**
  * An in-memory Discord that enforces the rules steward has to cope with:
  * permission checks, role hierarchy, managed roles, position shuffling, nonce
- * de-duplication, and an audit log. Faults can be injected per method.
+ * de-duplication, channels hidden from a bot that cannot view them, and an
+ * audit log. Faults can be injected per method.
  */
 
 const DISCORD_EPOCH = 1420070400000n;
@@ -86,6 +88,12 @@ export interface MemoryAdapterOptions {
    * allowed with NEWS). Defaults to announcement and stage.
    */
   communityChannelTypes?: number[];
+  /**
+   * The guild channel list leaves out channels the bot cannot view, as Discord
+   * does from 2026-11-16. true lists every channel, as Discord did before.
+   * Reading a hidden channel by id answers 403 either way.
+   */
+  listHiddenChannels?: boolean;
 }
 
 export class MemoryDiscordAdapter implements DiscordAdapter {
@@ -267,6 +275,21 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     return rule;
   }
 
+  /**
+   * Deny the bot's role View Channel on a channel, as someone editing its
+   * permissions might. Returns a function that puts the old overwrites back.
+   */
+  hideFromBot(channelId: string): () => void {
+    const channel = this.channels.get(channelId)!;
+    const before = clone(channel.overwrites);
+    channel.overwrites = channel.overwrites
+      .filter((o) => o.id !== this.botRoleId)
+      .concat([{ id: this.botRoleId, type: 'role', allow: 0n, deny: P.ViewChannel }]);
+    return () => {
+      this.channels.get(channelId)!.overwrites = before;
+    };
+  }
+
   setBotRolePosition(position: number): void {
     this.roles.get(this.botRoleId)!.position = position;
   }
@@ -349,6 +372,19 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
       botMember: clone(this.members.get(this.botUserId)!),
       fetchedAt: new Date().toISOString(),
     };
+  }
+
+  /** Discord's rule: View Channel, or for a category, any channel in it the bot can view. */
+  private botCanView(snap: GuildSnapshot, channel: ChannelInfo): boolean {
+    const view = (c: ChannelInfo) => has(botChannelPermissions(snap, c), P.ViewChannel);
+    return (
+      view(channel) ||
+      (channel.kind === 'category' && snap.channels.some((c) => c.parentId === channel.id && view(c)))
+    );
+  }
+
+  private missingAccess(): never {
+    throw new DiscordRequestError('http', 'Discord rejected the request: Missing Access', 403, 50001);
   }
 
   private async enter(method: string, args: unknown[]): Promise<FaultMode | null> {
@@ -517,7 +553,18 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
     await this.enter('fetchSnapshot', [guildId]);
     if (guildId !== this.guildId)
       throw new DiscordRequestError('http', 'Discord rejected the request: Unknown Guild', 404, 10004);
-    return this.snapshotNow();
+    const snap = this.snapshotNow();
+    if (!this.options.listHiddenChannels)
+      snap.channels = snap.channels.filter((c) => this.botCanView(snap, c));
+    return snap;
+  }
+
+  async fetchChannel(channelId: string): Promise<ChannelLookup> {
+    await this.enter('fetchChannel', [channelId]);
+    const channel = this.channels.get(channelId);
+    if (!channel) return { status: 'missing' };
+    if (!this.botCanView(this.snapshotNow(), channel)) return { status: 'hidden' };
+    return { status: 'visible', channel: clone(channel), guildId: this.guildId };
   }
 
   async fetchMember(_guildId: string, userId: string): Promise<MemberInfo | null> {
@@ -542,6 +589,12 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
 
   async fetchMessage(channelId: string, messageId: string): Promise<MessageInfo | null> {
     await this.enter('fetchMessage', [channelId, messageId]);
+    const channel = this.channels.get(channelId);
+    if (
+      channel &&
+      !has(botChannelPermissions(this.snapshotNow(), channel), P.ViewChannel | P.ReadMessageHistory)
+    )
+      this.missingAccess();
     const m = this.messages.get(messageId);
     if (!m || m.channelId !== channelId) return null;
     const { body: _b, ...info } = m;

@@ -27,6 +27,7 @@ import type {
   AutoModRuleInfo,
   AutoModWriteBody,
   ChannelInfo,
+  ChannelLookup,
   ChannelWriteBody,
   ConnectionState,
   ConnectionStatus,
@@ -373,6 +374,8 @@ export class DiscordJsAdapter implements DiscordAdapter {
         throw e;
       }
       const [channels, member] = await Promise.all([
+        // From 2026-11-16 this omits channels the bot cannot view. Absent is
+        // not deleted: callers that care check the channel with fetchChannel.
         rest.get(Routes.guildChannels(guildId)) as Promise<APIChannel[]>,
         rest.get(Routes.guildMember(guildId, botId)) as Promise<APIGuildMember>,
       ]);
@@ -384,6 +387,20 @@ export class DiscordJsAdapter implements DiscordAdapter {
         fetchedAt: new Date().toISOString(),
       };
     });
+  }
+
+  async fetchChannel(channelId: string): Promise<ChannelLookup> {
+    const rest = this.rest();
+    try {
+      const raw = (await rest.get(Routes.channel(channelId))) as APIChannel;
+      const guildId = 'guild_id' in raw ? (raw.guild_id ?? null) : null;
+      return { status: 'visible', channel: normaliseChannel(raw), guildId };
+    } catch (error) {
+      const e = toRequestError(error);
+      if (e instanceof DiscordRequestError && e.status === 403) return { status: 'hidden' };
+      if (e instanceof DiscordRequestError && e.status === 404) return { status: 'missing' };
+      throw e;
+    }
   }
 
   async fetchMember(guildId: string, userId: string): Promise<MemberInfo | null> {

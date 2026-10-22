@@ -48,11 +48,17 @@ export interface PlannerInput {
   blueprint: Blueprint;
   blueprintHash: string;
   snapshot: GuildSnapshot;
+  /**
+   * Mapped channels Discord left out of the snapshot that still exist: the
+   * bot lacks View Channel there. Nothing about them can be read or checked.
+   */
+  hiddenChannelIds: string[];
   mappings: Mapping[];
   /** null when the bot cannot read AutoMod rules (no Manage Server) and the blueprint has none. */
   automodRules: AutoModRuleInfo[] | null;
-  managedMessages: Array<ManagedMessage & { exists: boolean }>;
-  panels: Array<RolePanel & { messageExists: boolean }>;
+  /** `exists` is null when Discord refused to show the message (403). */
+  managedMessages: Array<ManagedMessage & { exists: boolean | null }>;
+  panels: Array<RolePanel & { messageExists: boolean | null }>;
   welcome: WelcomeConfig | undefined;
   selfRoles: string[];
   protectedRoles: string[];
@@ -117,6 +123,9 @@ class Planner {
   private readonly claimed = new Set<string>();
   private readonly mappingByKey = new Map<string, Mapping>();
   private readonly mappedIds = new Set<string>();
+  private readonly hiddenIds: Set<string>;
+  /** Channel keys bound to channels the bot cannot view. */
+  private readonly hiddenKeys = new Map<string, string>();
   private readonly entries: ChannelEntry[] = [];
   private settingsStepId: string | null = null;
   private selfRolesStepId: string | null = null;
@@ -129,6 +138,7 @@ class Planner {
     this.snap = input.snapshot;
     this.guildId = this.snap.guild.id;
     this.bot = botStanding(this.snap);
+    this.hiddenIds = new Set(input.hiddenChannelIds);
     for (const m of input.mappings) {
       this.mappingByKey.set(`${m.kind}:${m.key}`, m);
       this.mappedIds.add(`${m.kind}:${m.discordId}`);
@@ -243,6 +253,10 @@ class Planner {
     return this.snap.channels.find((c) => c.id === id);
   }
 
+  private hiddenReason(key: string | null, id: string): string {
+    return `the bot cannot see ${key ? `channel "${key}" (${id})` : `channel ${id}`}: it lacks View Channel there, and Discord does not show such channels to bots. Allow View Channel for the bot's role in that channel, then plan again`;
+  }
+
   /** Current Discord ID for a ref, `null` if it will be created by this plan, `undefined` if unknown. */
   private resolve(ref: RefString, kind: MappingKind): string | null | undefined {
     if (ref === 'everyone') return this.guildId;
@@ -263,13 +277,21 @@ class Planner {
       if (!key) {
         if (ref.startsWith('id:')) {
           const id = ref.slice(3);
+          if (kind === 'channel' && this.hiddenIds.has(id))
+            return { dependsOn, blocked: this.hiddenReason(null, id) };
           const exists = kind === 'role' ? this.role(id) : kind === 'channel' ? this.channel(id) : true;
-          if (!exists) return { dependsOn, blocked: `${kind} ${id} does not exist in this server` };
+          if (!exists)
+            return {
+              dependsOn,
+              blocked: `${kind} ${id} does not exist in this server${kind === 'channel' ? ', or the bot cannot see it (it needs View Channel there)' : ''}`,
+            };
         }
         continue;
       }
       if (this.unavailable.has(`${kind}:${key}`))
         return { dependsOn, blocked: `${kind} "${key}" will not exist` };
+      const hidden = kind === 'channel' ? this.hiddenKeys.get(key) : undefined;
+      if (hidden) return { dependsOn, blocked: this.hiddenReason(key, hidden) };
       const creator = this.creators[kind].get(key);
       if (creator) dependsOn.push(creator);
     }
@@ -295,7 +317,7 @@ class Planner {
       if (!exists(explicitId)) {
         throw new StewardError(
           'precondition_failed',
-          `${describe} "${key}" names id ${explicitId}, which does not exist in this server`,
+          `${describe} "${key}" names id ${explicitId}, which does not exist in this server${kind === 'channel' ? ', or the bot cannot see it (it needs View Channel there)' : ''}`,
         );
       }
       if (this.claimed.has(`${kind}:${explicitId}`)) {
@@ -400,6 +422,16 @@ class Planner {
   }
 
   private resolveChannels() {
+    if (
+      !this.bot.isAdmin &&
+      !has(this.bot.permissions, P.ViewChannel) &&
+      (this.entries.length > 0 || this.input.options.prune.channels)
+    ) {
+      this.warn(
+        'bot_cannot_view_channels',
+        "the bot lacks View Channel server-wide, so Discord shows it only the channels an overwrite opens to it. Channels it cannot see are invisible to this plan: same-named ones cannot be detected or adopted, and they cannot be pruned. Grant View Channel to the bot's role",
+      );
+    }
     for (const e of this.entries) {
       const kindOk = (c: ChannelInfo) =>
         e.kind === 'category'
@@ -413,11 +445,16 @@ class Planner {
         e.key,
         explicit,
         e.name,
-        (id) => !!this.channel(id),
+        // A channel the bot cannot view still exists; it is just not in the snapshot.
+        (id) => !!this.channel(id) || this.hiddenIds.has(id),
         () => this.snap.channels.filter((c) => c.name === e.name && kindOk(c)).map((c) => c.id),
         e.kind === 'category' ? 'category' : 'channel',
       );
       if (id !== undefined) this.ids.channel.set(e.key, id);
+      if (id && this.hiddenIds.has(id)) {
+        this.hiddenKeys.set(e.key, id);
+        continue;
+      }
       if (id) {
         const c = this.channel(id)!;
         if ((e.kind === 'category') !== (c.kind === 'category')) {
@@ -743,6 +780,25 @@ class Planner {
       if ((phase === 'category') !== (e.kind === 'category')) continue;
       if (!this.ids.channel.has(e.key)) continue;
       const id = this.ids.channel.get(e.key)!;
+      const hidden = this.hiddenKeys.get(e.key);
+      if (hidden) {
+        // It exists, so it is never created again; it cannot be read, so it
+        // cannot be compared or changed either. Say so instead of guessing.
+        if (phase !== 'community') {
+          this.add({
+            action: 'update_channel',
+            key: e.key,
+            channelId: hidden,
+            fields: {},
+            changes: [],
+            summary: `manage ${e.kind === 'category' ? 'category' : 'channel'} "${e.key}" (${hidden}), which the bot cannot see`,
+            destructive: false,
+            dependsOn: [],
+            blocked: this.hiddenReason(e.key, hidden),
+          });
+        }
+        continue;
+      }
       const needsCommunity = channelKindNeedsCommunity(this.snap.guild.features, e.kind);
       const enablingCommunity = this.enablingCommunity;
       // Creating a channel of a type tied to Community, or converting a text
@@ -983,7 +1039,9 @@ class Planner {
     for (const cat of this.bp.categories) split(channelRef(cat.key), cat.channels);
 
     for (const b of buckets) {
-      const keys = b.keys.filter((k) => this.ids.channel.has(k) && !this.unavailable.has(`channel:${k}`));
+      const keys = b.keys.filter(
+        (k) => this.ids.channel.has(k) && !this.unavailable.has(`channel:${k}`) && !this.hiddenKeys.has(k),
+      );
       if (keys.length < 2) continue;
       const parentId = b.parent ? this.resolve(b.parent, 'channel') : null;
       let needs = parentId === null && b.parent !== null;
@@ -1101,10 +1159,12 @@ class Planner {
         return;
       }
       const ref = channelRef(value);
-      refs.push({ ref, kind: 'channel' });
       const id = this.resolve(ref, 'channel');
       // A channel this plan creates has no id yet, so it is always a change.
+      // An unchanged setting needs nothing from its channel, which may be one
+      // the bot cannot see.
       if (!id || id !== current) {
+        refs.push({ ref, kind: 'channel' });
         fields[field] = ref;
         changes.push({
           field,
@@ -1347,6 +1407,11 @@ class Planner {
     return undefined;
   }
 
+  /** For a message Discord refused to show (403): steward cannot tell whether it is still there. */
+  private unreadableReason(what: string, channelId: string): string {
+    return `steward cannot read ${what} in channel ${channelId}${this.hiddenIds.has(channelId) ? ', which the bot cannot see' : ''}. Allow View Channel and Read Message History for the bot's role there, then plan again`;
+  }
+
   private planMessages() {
     for (const m of this.bp.messages) {
       const content = { content: m.content, embeds: m.embeds };
@@ -1355,9 +1420,12 @@ class Planner {
       const channelId = this.resolve(ref, 'channel');
       const rec = this.input.managedMessages.find((x) => x.key === m.key);
       const { dependsOn, blocked } = this.deps([{ ref, kind: 'channel' }]);
-      const block = blocked ?? this.sendBlock(ref, !!m.embeds?.length);
-      if (rec && rec.exists && channelId && rec.channelId === channelId) {
-        if (rec.payloadHash === payloadHash) {
+      const unreadable =
+        rec?.exists === null ? this.unreadableReason(`its message "${m.key}"`, rec.channelId) : undefined;
+      const block = unreadable ?? blocked ?? this.sendBlock(ref, !!m.embeds?.length);
+      if (rec && rec.exists !== false && channelId && rec.channelId === channelId) {
+        const same = rec.payloadHash === payloadHash;
+        if (same && !unreadable) {
           this.unchanged++;
           continue;
         }
@@ -1368,27 +1436,28 @@ class Planner {
           messageId: rec.messageId,
           content,
           payloadHash,
-          summary: `edit message "${m.key}"`,
+          summary: `${same ? 'check' : 'edit'} message "${m.key}"`,
           destructive: false,
           dependsOn,
           blocked: block,
         });
         continue;
       }
-      if (rec && !rec.exists)
+      if (rec && rec.exists === false)
         this.warn(
           'message_missing',
           `message "${m.key}" was deleted outside steward; it will be posted again`,
           m.key,
         );
+      const moving = rec && rec.exists !== false;
       this.add({
         action: 'post_message',
         key: m.key,
         channel: ref,
         content,
         payloadHash,
-        ...(rec && rec.exists ? { replaces: { channelId: rec.channelId, messageId: rec.messageId } } : {}),
-        summary: `post message "${m.key}" in ${describeRef(ref)}${rec && rec.exists ? ' (moving it from its old channel)' : ''}`,
+        ...(moving ? { replaces: { channelId: rec.channelId, messageId: rec.messageId } } : {}),
+        summary: `post message "${m.key}" in ${describeRef(ref)}${moving ? ' (moving it from its old channel)' : ''}`,
         destructive: false,
         dependsOn,
         blocked: block,
@@ -1527,11 +1596,16 @@ class Planner {
         ...fields.options.map((o) => ({ ref: o.role, kind: 'role' as const })),
       ]);
       const dependsOn = [...deps.dependsOn, ...(this.selfRolesStepId ? [this.selfRolesStepId] : [])];
+      const unreadable =
+        stored?.messageId && stored.messageExists === null
+          ? this.unreadableReason(`the message of role panel "${p.key}"`, stored.channelId)
+          : undefined;
       const block =
+        unreadable ??
         deps.blocked ??
         this.sendBlock(fields.channel, true) ??
         (has(this.bot.permissions, P.ManageRoles) ? undefined : 'role panels need Manage Roles');
-      if (stored && stored.messageId && stored.messageExists && channelId === stored.channelId) {
+      if (stored && stored.messageId && stored.messageExists !== false && channelId === stored.channelId) {
         const roleIds = fields.options.map((o) => this.resolve(o.role, 'role'));
         const same =
           roleIds.every((id) => !!id) &&
@@ -1547,7 +1621,7 @@ class Planner {
                 style: o.style,
               })),
             });
-        if (same) {
+        if (same && !unreadable) {
           this.unchanged++;
           continue;
         }
@@ -1558,20 +1632,21 @@ class Planner {
           channelId: stored.channelId,
           messageId: stored.messageId,
           fields,
-          summary: `update role panel "${p.key}"`,
+          summary: `${same ? 'check' : 'update'} role panel "${p.key}"`,
           destructive: false,
           dependsOn,
           blocked: block,
         });
         continue;
       }
-      if (stored && stored.messageId && !stored.messageExists)
+      if (stored && stored.messageId && stored.messageExists === false)
         this.warn(
           'panel_message_missing',
           `role panel "${p.key}" message was deleted outside steward; it will be posted again`,
           p.key,
         );
-      const moving = stored && stored.messageId && stored.messageExists && channelId !== stored.channelId;
+      const moving =
+        stored && stored.messageId && stored.messageExists !== false && channelId !== stored.channelId;
       this.add({
         action: 'post_panel',
         key: p.key,
@@ -1606,6 +1681,8 @@ class Planner {
           summary: `delete message "${m.key}"`,
           destructive: true,
           dependsOn: [],
+          blocked:
+            m.exists === null ? this.unreadableReason(`its message "${m.key}"`, m.channelId) : undefined,
         });
       }
     }
@@ -1618,10 +1695,14 @@ class Planner {
           key: p.key,
           panelId: p.id,
           channelId: p.channelId,
-          messageId: p.messageExists ? p.messageId : null,
+          messageId: p.messageExists !== false ? p.messageId : null,
           summary: `delete role panel "${p.key}"`,
           destructive: true,
           dependsOn: [],
+          blocked:
+            p.messageId && p.messageExists === null
+              ? this.unreadableReason(`the message of role panel "${p.key}"`, p.channelId)
+              : undefined,
         });
       }
     }
@@ -1682,6 +1763,22 @@ class Planner {
             : has(botChannelPermissions(this.snap, c), P.ManageChannels)
               ? undefined
               : `the bot lacks Manage Channels in #${c.name}`,
+        });
+      }
+      // Managed channels the bot cannot see are not in the snapshot, so they
+      // are never deleted unseen; the plan says why they stay.
+      for (const id of this.hiddenIds) {
+        const key = mappedKey('channel', id);
+        if (!key || inBlueprint('channel', id)) continue;
+        this.add({
+          action: 'delete_channel',
+          key,
+          targetId: id,
+          name: key,
+          summary: `delete channel "${key}" (${id}), which the bot cannot see`,
+          destructive: true,
+          dependsOn: [],
+          blocked: this.hiddenReason(key, id),
         });
       }
     }

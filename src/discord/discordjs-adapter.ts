@@ -1,13 +1,25 @@
-import type { ClientOptions, Interaction } from 'discord.js';
+import type { ClientOptions, Interaction, RequestData } from 'discord.js';
 import { Client, DiscordAPIError, Events, GatewayIntentBits, HTTPError, MessageFlags } from 'discord.js';
 import type {
   APIAuditLog,
   APIAutoModerationRule,
   APIChannel,
+  APIEmoji,
+  APIExtendedInvite,
   APIGuild,
+  APIGuildIntegration,
   APIGuildMember,
+  APIGuildOnboarding,
+  APIGuildScheduledEvent,
+  APIGuildWelcomeScreen,
+  APIGuildWidgetSettings,
+  APIIncidentsData,
   APIMessage,
   APIRole,
+  APISoundboardSound,
+  APISticker,
+  APITemplate,
+  APIWebhook,
 } from 'discord-api-types/v10';
 import { Routes } from 'discord-api-types/v10';
 import type { Logger } from '../logger.js';
@@ -17,29 +29,66 @@ import type { AdapterEvents, AuditLogEntry, DiscordAdapter, ReactionAddEvent } f
 import {
   normaliseAuditEntry,
   normaliseAutoModRule,
+  normaliseBotProfile,
   normaliseChannel,
+  normaliseEmoji,
   normaliseGuild,
+  normaliseIncidents,
+  normaliseIntegration,
+  normaliseInvite,
   normaliseMember,
   normaliseMessage,
+  normaliseOnboarding,
   normaliseRole,
+  normaliseScheduledEvent,
+  normaliseSound,
+  normaliseSticker,
+  normaliseTemplate,
+  normaliseWebhook,
+  normaliseWelcomeScreen,
+  normaliseWidget,
 } from './normalize.js';
 import type {
   AutoModRuleInfo,
   AutoModWriteBody,
+  BotProfileInfo,
+  BotProfileWriteBody,
   ChannelInfo,
   ChannelLookup,
   ChannelWriteBody,
   ConnectionState,
   ConnectionStatus,
+  EmojiInfo,
+  EmojiWriteBody,
   GuildInfo,
   GuildSnapshot,
   GuildWriteBody,
+  IncidentsInfo,
+  IntegrationInfo,
+  InviteInfo,
+  InviteWriteBody,
   MemberInfo,
   MessageBody,
   MessageInfo,
+  OnboardingInfo,
+  OnboardingWriteBody,
   PositionUpdate,
   RoleInfo,
   RoleWriteBody,
+  ScheduledEventInfo,
+  ScheduledEventWriteBody,
+  SoundInfo,
+  SoundWriteBody,
+  StickerFile,
+  StickerInfo,
+  StickerWriteBody,
+  TemplateInfo,
+  TemplateWriteBody,
+  WebhookInfo,
+  WebhookWriteBody,
+  WelcomeScreenInfo,
+  WelcomeScreenWriteBody,
+  WidgetInfo,
 } from './types.js';
 
 export interface DiscordJsAdapterOptions {
@@ -142,6 +191,8 @@ const MAX_AUDIT_REASON = 512;
  * reconciliation searches the audit log for, and a split surrogate pair would
  * make encodeURIComponent throw.
  */
+const NOTHING = (): void => undefined;
+
 export function truncateReason(reason: string): string {
   // Lone surrogates (possible in user-supplied JSON strings) would throw too.
   const text = reason.replace(/\p{Cs}/gu, '\uFFFD');
@@ -374,6 +425,18 @@ export class DiscordJsAdapter implements DiscordAdapter {
     } catch (error) {
       throw toRequestError(error);
     }
+  }
+
+  /** One request whose result is mapped through `map`. The audit-log reason is truncated to fit. */
+  private async send<R, T>(
+    method: 'get' | 'post' | 'patch' | 'put' | 'delete',
+    route: `/${string}`,
+    options: RequestData & { reason?: string },
+    map: (raw: R) => T,
+  ): Promise<T> {
+    const rest = this.rest();
+    const opts = options.reason ? { ...options, reason: truncateReason(options.reason) } : options;
+    return this.call(async () => map((await rest[method](route, opts)) as R));
   }
 
   async fetchSnapshot(guildId: string): Promise<GuildSnapshot> {
@@ -676,5 +739,294 @@ export class DiscordJsAdapter implements DiscordAdapter {
     await this.call(() =>
       rest.delete(Routes.guildAutoModerationRule(guildId, ruleId), { reason: truncateReason(reason) }),
     );
+  }
+
+  async fetchOnboarding(guildId: string): Promise<OnboardingInfo> {
+    return this.send('get', Routes.guildOnboarding(guildId), {}, (r: APIGuildOnboarding) =>
+      normaliseOnboarding(r),
+    );
+  }
+
+  async putOnboarding(guildId: string, body: OnboardingWriteBody, reason: string): Promise<OnboardingInfo> {
+    return this.send('put', Routes.guildOnboarding(guildId), { body, reason }, (r: APIGuildOnboarding) =>
+      normaliseOnboarding(r),
+    );
+  }
+
+  async fetchWelcomeScreen(guildId: string): Promise<WelcomeScreenInfo | null> {
+    const rest = this.rest();
+    try {
+      return normaliseWelcomeScreen(
+        (await rest.get(Routes.guildWelcomeScreen(guildId))) as APIGuildWelcomeScreen,
+      );
+    } catch (error) {
+      const e = toRequestError(error);
+      if (e instanceof DiscordRequestError && e.status === 404) return null;
+      throw e;
+    }
+  }
+
+  async editWelcomeScreen(
+    guildId: string,
+    body: WelcomeScreenWriteBody,
+    reason: string,
+  ): Promise<WelcomeScreenInfo> {
+    return this.send(
+      'patch',
+      Routes.guildWelcomeScreen(guildId),
+      { body, reason },
+      (r: APIGuildWelcomeScreen) => normaliseWelcomeScreen(r),
+    );
+  }
+
+  async fetchWidget(guildId: string): Promise<WidgetInfo> {
+    return this.send('get', Routes.guildWidgetSettings(guildId), {}, (r: APIGuildWidgetSettings) =>
+      normaliseWidget(r),
+    );
+  }
+
+  async editWidget(
+    guildId: string,
+    body: { enabled?: boolean; channel_id?: string | null },
+    reason: string,
+  ): Promise<WidgetInfo> {
+    return this.send(
+      'patch',
+      Routes.guildWidgetSettings(guildId),
+      { body, reason },
+      (r: APIGuildWidgetSettings) => normaliseWidget(r),
+    );
+  }
+
+  async setIncidentActions(
+    guildId: string,
+    body: { invites_disabled_until?: string | null; dms_disabled_until?: string | null },
+    reason: string,
+  ): Promise<IncidentsInfo> {
+    return this.send('put', Routes.guildIncidentActions(guildId), { body, reason }, (r: APIIncidentsData) =>
+      normaliseIncidents(r),
+    );
+  }
+
+  async editBotProfile(guildId: string, body: BotProfileWriteBody, reason: string): Promise<BotProfileInfo> {
+    return this.send('patch', Routes.guildMember(guildId, '@me'), { body, reason }, (r: APIGuildMember) =>
+      normaliseBotProfile(r),
+    );
+  }
+
+  async fetchEmojis(guildId: string): Promise<EmojiInfo[]> {
+    return this.send('get', Routes.guildEmojis(guildId), {}, (r: APIEmoji[]) => r.map(normaliseEmoji));
+  }
+
+  async createEmoji(guildId: string, body: EmojiWriteBody, reason: string): Promise<EmojiInfo> {
+    return this.send('post', Routes.guildEmojis(guildId), { body, reason }, (r: APIEmoji) =>
+      normaliseEmoji(r),
+    );
+  }
+
+  async editEmoji(
+    guildId: string,
+    emojiId: string,
+    body: EmojiWriteBody,
+    reason: string,
+  ): Promise<EmojiInfo> {
+    return this.send('patch', Routes.guildEmoji(guildId, emojiId), { body, reason }, (r: APIEmoji) =>
+      normaliseEmoji(r),
+    );
+  }
+
+  async deleteEmoji(guildId: string, emojiId: string, reason: string): Promise<void> {
+    return this.send('delete', Routes.guildEmoji(guildId, emojiId), { reason }, NOTHING);
+  }
+
+  async fetchStickers(guildId: string): Promise<StickerInfo[]> {
+    return this.send('get', Routes.guildStickers(guildId), {}, (r: APISticker[]) => r.map(normaliseSticker));
+  }
+
+  async createSticker(
+    guildId: string,
+    body: Required<StickerWriteBody>,
+    file: StickerFile,
+    reason: string,
+  ): Promise<StickerInfo> {
+    // Stickers are the one expression Discord takes as multipart form data.
+    return this.send(
+      'post',
+      Routes.guildStickers(guildId),
+      {
+        body,
+        files: [{ key: 'file', name: file.filename, data: file.data, contentType: file.contentType }],
+        appendToFormData: true,
+        reason,
+      },
+      (r: APISticker) => normaliseSticker(r),
+    );
+  }
+
+  async editSticker(
+    guildId: string,
+    stickerId: string,
+    body: StickerWriteBody,
+    reason: string,
+  ): Promise<StickerInfo> {
+    return this.send('patch', Routes.guildSticker(guildId, stickerId), { body, reason }, (r: APISticker) =>
+      normaliseSticker(r),
+    );
+  }
+
+  async deleteSticker(guildId: string, stickerId: string, reason: string): Promise<void> {
+    return this.send('delete', Routes.guildSticker(guildId, stickerId), { reason }, NOTHING);
+  }
+
+  async fetchSounds(guildId: string): Promise<SoundInfo[]> {
+    return this.send('get', Routes.guildSoundboardSounds(guildId), {}, (r: { items: APISoundboardSound[] }) =>
+      r.items.map(normaliseSound),
+    );
+  }
+
+  async createSound(guildId: string, body: SoundWriteBody, reason: string): Promise<SoundInfo> {
+    return this.send(
+      'post',
+      Routes.guildSoundboardSounds(guildId),
+      { body, reason },
+      (r: APISoundboardSound) => normaliseSound(r),
+    );
+  }
+
+  async editSound(
+    guildId: string,
+    soundId: string,
+    body: SoundWriteBody,
+    reason: string,
+  ): Promise<SoundInfo> {
+    return this.send(
+      'patch',
+      Routes.guildSoundboardSound(guildId, soundId),
+      { body, reason },
+      (r: APISoundboardSound) => normaliseSound(r),
+    );
+  }
+
+  async deleteSound(guildId: string, soundId: string, reason: string): Promise<void> {
+    return this.send('delete', Routes.guildSoundboardSound(guildId, soundId), { reason }, NOTHING);
+  }
+
+  async fetchScheduledEvents(guildId: string): Promise<ScheduledEventInfo[]> {
+    return this.send(
+      'get',
+      Routes.guildScheduledEvents(guildId),
+      { query: new URLSearchParams({ with_user_count: 'true' }) },
+      (r: APIGuildScheduledEvent[]) => r.map(normaliseScheduledEvent),
+    );
+  }
+
+  async createScheduledEvent(
+    guildId: string,
+    body: ScheduledEventWriteBody,
+    reason: string,
+  ): Promise<ScheduledEventInfo> {
+    return this.send(
+      'post',
+      Routes.guildScheduledEvents(guildId),
+      { body, reason },
+      (r: APIGuildScheduledEvent) => normaliseScheduledEvent(r),
+    );
+  }
+
+  async editScheduledEvent(
+    guildId: string,
+    eventId: string,
+    body: ScheduledEventWriteBody,
+    reason: string,
+  ): Promise<ScheduledEventInfo> {
+    return this.send(
+      'patch',
+      Routes.guildScheduledEvent(guildId, eventId),
+      { body, reason },
+      (r: APIGuildScheduledEvent) => normaliseScheduledEvent(r),
+    );
+  }
+
+  async deleteScheduledEvent(guildId: string, eventId: string, reason: string): Promise<void> {
+    return this.send('delete', Routes.guildScheduledEvent(guildId, eventId), { reason }, NOTHING);
+  }
+
+  async fetchInvites(guildId: string): Promise<InviteInfo[]> {
+    return this.send('get', Routes.guildInvites(guildId), {}, (r: APIExtendedInvite[]) =>
+      r.map(normaliseInvite),
+    );
+  }
+
+  async createInvite(channelId: string, body: InviteWriteBody, reason: string): Promise<InviteInfo> {
+    return this.send('post', Routes.channelInvites(channelId), { body, reason }, (r: APIExtendedInvite) =>
+      normaliseInvite(r),
+    );
+  }
+
+  async deleteInvite(code: string, reason: string): Promise<void> {
+    return this.send('delete', Routes.invite(code), { reason }, NOTHING);
+  }
+
+  async fetchWebhooks(guildId: string): Promise<WebhookInfo[]> {
+    return this.send('get', Routes.guildWebhooks(guildId), {}, (r: APIWebhook[]) => r.map(normaliseWebhook));
+  }
+
+  async createWebhook(channelId: string, body: WebhookWriteBody, reason: string): Promise<WebhookInfo> {
+    return this.send('post', Routes.channelWebhooks(channelId), { body, reason }, (r: APIWebhook) =>
+      normaliseWebhook(r),
+    );
+  }
+
+  async editWebhook(webhookId: string, body: WebhookWriteBody, reason: string): Promise<WebhookInfo> {
+    return this.send('patch', Routes.webhook(webhookId), { body, reason }, (r: APIWebhook) =>
+      normaliseWebhook(r),
+    );
+  }
+
+  async deleteWebhook(webhookId: string, reason: string): Promise<void> {
+    return this.send('delete', Routes.webhook(webhookId), { reason }, NOTHING);
+  }
+
+  async fetchTemplates(guildId: string): Promise<TemplateInfo[]> {
+    return this.send('get', Routes.guildTemplates(guildId), {}, (r: APITemplate[]) =>
+      r.map(normaliseTemplate),
+    );
+  }
+
+  async createTemplate(guildId: string, body: TemplateWriteBody, reason: string): Promise<TemplateInfo> {
+    return this.send('post', Routes.guildTemplates(guildId), { body, reason }, (r: APITemplate) =>
+      normaliseTemplate(r),
+    );
+  }
+
+  async editTemplate(
+    guildId: string,
+    code: string,
+    body: TemplateWriteBody,
+    reason: string,
+  ): Promise<TemplateInfo> {
+    return this.send('patch', Routes.guildTemplate(guildId, code), { body, reason }, (r: APITemplate) =>
+      normaliseTemplate(r),
+    );
+  }
+
+  async syncTemplate(guildId: string, code: string, reason: string): Promise<TemplateInfo> {
+    return this.send('put', Routes.guildTemplate(guildId, code), { reason }, (r: APITemplate) =>
+      normaliseTemplate(r),
+    );
+  }
+
+  async deleteTemplate(guildId: string, code: string, reason: string): Promise<void> {
+    return this.send('delete', Routes.guildTemplate(guildId, code), { reason }, NOTHING);
+  }
+
+  async fetchIntegrations(guildId: string): Promise<IntegrationInfo[]> {
+    return this.send('get', Routes.guildIntegrations(guildId), {}, (r: APIGuildIntegration[]) =>
+      r.map(normaliseIntegration),
+    );
+  }
+
+  async deleteIntegration(guildId: string, integrationId: string, reason: string): Promise<void> {
+    return this.send('delete', Routes.guildIntegration(guildId, integrationId), { reason }, NOTHING);
   }
 }

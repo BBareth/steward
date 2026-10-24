@@ -16,6 +16,8 @@ import { runOperation } from '../../ops/journal.js';
 import { StewardError } from '../../util/errors.js';
 import { hashValue } from '../../util/hash.js';
 import { newId } from '../../util/ids.js';
+import { loadMedia, mediaInput } from '../../util/media.js';
+import type { MediaInput, MediaUse } from '../../util/media.js';
 import { defineTool } from '../registry.js';
 import {
   guildIdInput,
@@ -86,7 +88,7 @@ export const featureTools = [
     name: 'update_guild_settings',
     title: 'Update server settings',
     description:
-      'Change server settings Discord exposes to bots: name, description, verification level, notification default, content filter, AFK channel/timeout, system/rules/updates/safety channels and flags, locale, boost bar, and the Community feature. Needs Manage Server.',
+      'Change server settings Discord exposes to bots: name, description, icon, banner, invite and discovery splash images, verification level, notification default, content filter, AFK channel/timeout, system/rules/updates/safety channels and flags, locale, boost bar, pausing invites, raid alerts and the Community feature. Images are { url } (https) or { data_uri }, or null to remove; banners and splashes need the boost level that unlocks them (see get_server_setup). Needs Manage Server.',
     scope: 'write',
     input: z.object({
       guild_id: guildIdInput,
@@ -113,6 +115,23 @@ export const featureTools = [
       safety_alerts_channel_id: snowflake.nullable().optional(),
       preferred_locale: z.string().min(2).max(10).optional(),
       premium_progress_bar: z.boolean().optional(),
+      icon: mediaInput
+        .nullable()
+        .optional()
+        .describe('Square, at least 512x512. Animated GIFs need the ANIMATED_ICON unlock.'),
+      banner: mediaInput.nullable().optional().describe('16:9, at least 960x540.'),
+      invite_splash: mediaInput.nullable().optional().describe('Background of invite pages; 16:9.'),
+      discovery_splash: mediaInput.nullable().optional().describe('Shown in Server Discovery; 16:9.'),
+      invites_paused: z
+        .boolean()
+        .optional()
+        .describe(
+          'Stop new members joining through invites until turned off. For a timed pause use set_security_actions.',
+        ),
+      raid_alerts: z
+        .boolean()
+        .optional()
+        .describe('Alert moderators in the safety alerts channel when Discord sees join raids or DM spam.'),
       community: z
         .boolean()
         .optional()
@@ -161,17 +180,51 @@ export const featureTools = [
         }
         body.system_channel_flags = flags;
       }
+      const features = new Set(s.guild.features);
+      // [body field, input, media rules, feature that unlocks it, animated feature]
+      const images: Array<
+        [keyof GuildWriteBody, MediaInput | null | undefined, MediaUse, string | null, string | null]
+      > = [
+        ['icon', a.icon, 'server_icon', null, 'ANIMATED_ICON'],
+        ['banner', a.banner, 'server_banner', 'BANNER', 'ANIMATED_BANNER'],
+        ['splash', a.invite_splash, 'invite_splash', 'INVITE_SPLASH', null],
+        ['discovery_splash', a.discovery_splash, 'discovery_splash', 'DISCOVERABLE', null],
+      ];
+      for (const [field, input, use, unlock, animated] of images) {
+        if (input === undefined) continue;
+        if (input === null) {
+          (body as Record<string, unknown>)[field] = null;
+          continue;
+        }
+        if (unlock && !features.has(unlock))
+          throw new StewardError(
+            'precondition_failed',
+            `this server has not unlocked ${use.replace(/_/g, ' ')}s (${unlock})`,
+          );
+        const media = await loadMedia(input, use);
+        if (media.contentType === 'image/gif' && !(animated && features.has(animated)))
+          throw new StewardError(
+            'precondition_failed',
+            `this server cannot use an animated ${use.replace(/_/g, ' ')}${animated ? ` (needs ${animated})` : ''}`,
+          );
+        (body as Record<string, unknown>)[field] = media.dataUri;
+      }
+      const toggle = (flag: string, on: boolean) => (on ? features.add(flag) : features.delete(flag));
       if (a.community !== undefined) {
         if (a.community !== s.guild.features.includes('COMMUNITY') && !botStanding(s).isAdmin)
           throw new StewardError(
             'precondition_failed',
             'Discord requires Administrator to turn Community on or off',
           );
-        const f = new Set(s.guild.features);
-        if (a.community) f.add('COMMUNITY');
-        else f.delete('COMMUNITY');
-        body.features = [...f];
+        toggle('COMMUNITY', a.community);
       }
+      if (a.invites_paused !== undefined) toggle('INVITES_DISABLED', a.invites_paused);
+      if (a.raid_alerts !== undefined) toggle('RAID_ALERTS_DISABLED', !a.raid_alerts);
+      if (a.community !== undefined || a.invites_paused !== undefined || a.raid_alerts !== undefined)
+        body.features = [...features];
+      const warnings: string[] = [];
+      if (a.raid_alerts && !(body.safety_alerts_channel_id ?? s.guild.safetyAlertsChannelId))
+        warnings.push('raid alerts go to the safety alerts channel, which is not set');
       if (Object.keys(body).length === 0) throw new StewardError('invalid_argument', 'nothing to change');
       const out = await mutate(call, a.guild_id, a.reason, {
         action: 'update_settings',
@@ -181,7 +234,7 @@ export const featureTools = [
         idempotent: true,
         run: (reason) => call.app.adapter.editGuild(a.guild_id, body, reason),
       });
-      return { op_id: out.opId, changed: Object.keys(body) };
+      return { op_id: out.opId, changed: Object.keys(body), ...(warnings.length ? { warnings } : {}) };
     },
   }),
 

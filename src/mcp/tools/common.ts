@@ -2,7 +2,8 @@ import { z } from 'zod';
 import type { GuildSnapshot } from '../../discord/types.js';
 import type { OpOutcome, OpSpec } from '../../ops/journal.js';
 import { runOperation } from '../../ops/journal.js';
-import { StewardError } from '../../util/errors.js';
+import { StewardError, errorPayload } from '../../util/errors.js';
+import { isSnowflake } from '../../util/ids.js';
 import type { CallContext } from '../registry.js';
 
 export const snowflake = z.string().regex(/^\d{17,20}$/, 'must be a Discord ID (17-20 digits)');
@@ -114,4 +115,59 @@ export function requireFound<T>(value: T | undefined | null, what: string): T {
   if (value === undefined || value === null)
     throw new StewardError('not_found', `${what} not found in this server`);
   return value;
+}
+
+export const emojiInput = z
+  .string()
+  .min(1)
+  .max(64)
+  .describe('A unicode emoji such as 🎮, or the ID of a custom emoji in this server.');
+
+export interface ResolvedEmoji {
+  id: string | null;
+  name: string;
+}
+
+const SNOWFLAKE = /^\d{17,20}$/;
+const UNICODE_EMOJI = /^(?:\p{Extended_Pictographic}|\p{Regional_Indicator}|[#*0-9]\uFE0F?\u20E3)/u;
+
+/**
+ * Turn emoji inputs into Discord's id/name pair. Custom emoji must belong to
+ * this server; Discord needs their name as well as their id.
+ */
+export async function emojiResolver(
+  call: CallContext,
+  guildId: string,
+  inputs: Array<string | null | undefined>,
+): Promise<(input: string) => ResolvedEmoji> {
+  const emojis = inputs.some((e) => e && isSnowflake(e)) ? await call.app.adapter.fetchEmojis(guildId) : [];
+  return (input) => {
+    if (SNOWFLAKE.test(input)) {
+      const e = requireFound(
+        emojis.find((x) => x.id === input),
+        `custom emoji ${input}`,
+      );
+      return { id: e.id, name: e.name };
+    }
+    if (input.length > 32 || !UNICODE_EMOJI.test(input))
+      throw new StewardError(
+        'invalid_argument',
+        `"${input}" is neither a unicode emoji nor a custom emoji ID`,
+      );
+    return { id: null, name: input };
+  };
+}
+
+/** A Discord CDN link for an image hash; animated hashes start with a_. */
+export function cdnUrl(path: string, hash: string | null | undefined): string | null {
+  return hash ? `https://cdn.discordapp.com/${path}/${hash}.${hash.startsWith('a_') ? 'gif' : 'png'}` : null;
+}
+
+/** Read one part of a report without letting its failure sink the rest. */
+export async function section<T, R>(work: Promise<T>, map: (value: T) => R): Promise<R | { error: string }> {
+  try {
+    return map(await work);
+  } catch (e) {
+    return { error: errorPayload(e).message };
+  }
 }

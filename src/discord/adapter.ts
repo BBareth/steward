@@ -1,19 +1,43 @@
 import type {
   AutoModRuleInfo,
   AutoModWriteBody,
+  BotProfileInfo,
+  BotProfileWriteBody,
   ChannelInfo,
   ChannelLookup,
   ChannelWriteBody,
   ConnectionStatus,
+  EmojiInfo,
+  EmojiWriteBody,
   GuildInfo,
   GuildSnapshot,
   GuildWriteBody,
+  IncidentsInfo,
+  IntegrationInfo,
+  InviteInfo,
+  InviteWriteBody,
   MemberInfo,
   MessageBody,
   MessageInfo,
+  OnboardingInfo,
+  OnboardingWriteBody,
   PositionUpdate,
   RoleInfo,
   RoleWriteBody,
+  ScheduledEventInfo,
+  ScheduledEventWriteBody,
+  SoundInfo,
+  SoundWriteBody,
+  StickerFile,
+  StickerInfo,
+  StickerWriteBody,
+  TemplateInfo,
+  TemplateWriteBody,
+  WebhookInfo,
+  WebhookWriteBody,
+  WelcomeScreenInfo,
+  WelcomeScreenWriteBody,
+  WidgetInfo,
 } from './types.js';
 
 export interface AuditLogEntry {
@@ -128,4 +152,93 @@ export interface DiscordAdapter {
    * segment. Discord documents no audit-log reason for this endpoint.
    */
   removeUserReaction(channelId: string, messageId: string, emoji: string, userId: string): Promise<void>;
+
+  // Server setup singletons. Each needs Manage Server unless noted.
+  fetchOnboarding(guildId: string): Promise<OnboardingInfo>;
+  /** Replaces the whole onboarding configuration. */
+  putOnboarding(guildId: string, body: OnboardingWriteBody, reason: string): Promise<OnboardingInfo>;
+  /** Null when the server has never had a welcome screen (Discord answers 404). */
+  fetchWelcomeScreen(guildId: string): Promise<WelcomeScreenInfo | null>;
+  editWelcomeScreen(
+    guildId: string,
+    body: WelcomeScreenWriteBody,
+    reason: string,
+  ): Promise<WelcomeScreenInfo>;
+  fetchWidget(guildId: string): Promise<WidgetInfo>;
+  editWidget(
+    guildId: string,
+    body: { enabled?: boolean; channel_id?: string | null },
+    reason: string,
+  ): Promise<WidgetInfo>;
+  /** Pause invites or DMs until a time (at most 24 hours ahead), or null to resume. */
+  setIncidentActions(
+    guildId: string,
+    body: { invites_disabled_until?: string | null; dms_disabled_until?: string | null },
+    reason: string,
+  ): Promise<IncidentsInfo>;
+  /** The bot's own nickname, avatar, banner and bio in one server. Needs Change Nickname for nick. */
+  editBotProfile(guildId: string, body: BotProfileWriteBody, reason: string): Promise<BotProfileInfo>;
+
+  // Expressions. Create needs Create Expressions; edit and delete need Manage Expressions
+  // (or Create Expressions for ones the bot made).
+  fetchEmojis(guildId: string): Promise<EmojiInfo[]>;
+  createEmoji(guildId: string, body: EmojiWriteBody, reason: string): Promise<EmojiInfo>;
+  editEmoji(guildId: string, emojiId: string, body: EmojiWriteBody, reason: string): Promise<EmojiInfo>;
+  deleteEmoji(guildId: string, emojiId: string, reason: string): Promise<void>;
+  fetchStickers(guildId: string): Promise<StickerInfo[]>;
+  createSticker(
+    guildId: string,
+    body: Required<StickerWriteBody>,
+    file: StickerFile,
+    reason: string,
+  ): Promise<StickerInfo>;
+  editSticker(
+    guildId: string,
+    stickerId: string,
+    body: StickerWriteBody,
+    reason: string,
+  ): Promise<StickerInfo>;
+  deleteSticker(guildId: string, stickerId: string, reason: string): Promise<void>;
+  fetchSounds(guildId: string): Promise<SoundInfo[]>;
+  createSound(guildId: string, body: SoundWriteBody, reason: string): Promise<SoundInfo>;
+  editSound(guildId: string, soundId: string, body: SoundWriteBody, reason: string): Promise<SoundInfo>;
+  deleteSound(guildId: string, soundId: string, reason: string): Promise<void>;
+
+  /** Create needs Create Events; edit and delete need Manage Events (or Create Events for the bot's own). */
+  fetchScheduledEvents(guildId: string): Promise<ScheduledEventInfo[]>;
+  createScheduledEvent(
+    guildId: string,
+    body: ScheduledEventWriteBody,
+    reason: string,
+  ): Promise<ScheduledEventInfo>;
+  editScheduledEvent(
+    guildId: string,
+    eventId: string,
+    body: ScheduledEventWriteBody,
+    reason: string,
+  ): Promise<ScheduledEventInfo>;
+  deleteScheduledEvent(guildId: string, eventId: string, reason: string): Promise<void>;
+
+  /** Listing needs Manage Server; creating needs Create Invite on the channel. */
+  fetchInvites(guildId: string): Promise<InviteInfo[]>;
+  createInvite(channelId: string, body: InviteWriteBody, reason: string): Promise<InviteInfo>;
+  /** Needs Manage Channels on the invite's channel, or Manage Server. */
+  deleteInvite(code: string, reason: string): Promise<void>;
+
+  /** Needs Manage Webhooks. Results never include webhook tokens. */
+  fetchWebhooks(guildId: string): Promise<WebhookInfo[]>;
+  createWebhook(channelId: string, body: WebhookWriteBody, reason: string): Promise<WebhookInfo>;
+  editWebhook(webhookId: string, body: WebhookWriteBody, reason: string): Promise<WebhookInfo>;
+  deleteWebhook(webhookId: string, reason: string): Promise<void>;
+
+  fetchTemplates(guildId: string): Promise<TemplateInfo[]>;
+  createTemplate(guildId: string, body: TemplateWriteBody, reason: string): Promise<TemplateInfo>;
+  editTemplate(guildId: string, code: string, body: TemplateWriteBody, reason: string): Promise<TemplateInfo>;
+  /** Update the template to the server's current structure. */
+  syncTemplate(guildId: string, code: string, reason: string): Promise<TemplateInfo>;
+  deleteTemplate(guildId: string, code: string, reason: string): Promise<void>;
+
+  fetchIntegrations(guildId: string): Promise<IntegrationInfo[]>;
+  /** Removes the integration and kicks its bot, if it has one. */
+  deleteIntegration(guildId: string, integrationId: string, reason: string): Promise<void>;
 }

@@ -16,7 +16,7 @@ import {
   rolesOutOfBotReach,
   rolesTopDown,
 } from '../../discord/permissions.js';
-import type { ChannelInfo, GuildSnapshot, RoleInfo } from '../../discord/types.js';
+import type { ChannelExtras, ChannelInfo, GuildSnapshot, RoleInfo } from '../../discord/types.js';
 import { formatColor } from '../../features/messages.js';
 import { channelGroup, sortChannels } from '../../ops/ordering.js';
 import { CONTENT_FILTERS, NOTIFICATION_LEVELS, VERIFICATION_LEVELS } from '../../blueprint/schema.js';
@@ -50,6 +50,42 @@ function keyIndex(
 
 function everyoneCanView(s: GuildSnapshot, c: ChannelInfo) {
   return has(channelPermissions(s, c, { userId: null, roleIds: [] }), P.ViewChannel);
+}
+
+/** Type-specific channel settings, named the way update_channel takes them. */
+function channelSettings(x: ChannelExtras) {
+  const flags = x.flags ?? 0;
+  const tags = x.availableTags;
+  return {
+    rtc_region: x.rtcRegion === undefined ? undefined : (x.rtcRegion ?? 'automatic'),
+    video_quality: x.videoQualityMode === undefined ? undefined : x.videoQualityMode === 2 ? 'full' : 'auto',
+    default_auto_archive_minutes: x.defaultAutoArchiveDuration,
+    default_thread_slowmode_seconds: x.defaultThreadRateLimitPerUser,
+    forum_tags: tags?.map((t) => ({
+      id: t.id,
+      name: t.name,
+      moderated: t.moderated,
+      emoji: t.emojiId ?? t.emojiName ?? undefined,
+    })),
+    default_reaction_emoji:
+      x.defaultReactionEmoji === undefined
+        ? undefined
+        : (x.defaultReactionEmoji?.emojiId ?? x.defaultReactionEmoji?.emojiName ?? null),
+    default_sort_order:
+      x.defaultSortOrder === undefined
+        ? undefined
+        : x.defaultSortOrder === 1
+          ? 'creation_date'
+          : 'latest_activity',
+    default_forum_layout:
+      x.defaultForumLayout === undefined || x.defaultForumLayout === 0
+        ? undefined
+        : x.defaultForumLayout === 2
+          ? 'gallery'
+          : 'list',
+    require_tag: tags ? (flags & 16) !== 0 : undefined,
+    hide_media_download_options: (flags & 32768) !== 0 ? true : undefined,
+  };
 }
 
 function targetName(s: GuildSnapshot, id: string, type: 'role' | 'member') {
@@ -268,6 +304,7 @@ export const inspectTools = [
         slowmode_seconds: c.rateLimitPerUser,
         bitrate: c.bitrate ?? undefined,
         user_limit: c.userLimit ?? undefined,
+        settings: c.extra ? channelSettings(c.extra) : undefined,
         synced_with_category: parent ? !!synced : undefined,
         everyone_can_view: everyoneCanView(s, c),
         overwrites: c.overwrites.map((o) => ({

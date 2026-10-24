@@ -189,7 +189,7 @@ community server ([`examples/community.yaml`](./examples/community.yaml)).
 
 ## Tools
 
-46 typed tools; each credential only sees the ones its scopes allow.
+71 typed tools; each credential only sees the ones its scopes allow.
 
 | Group | Tools | Scope |
 | --- | --- | --- |
@@ -200,12 +200,34 @@ community server ([`examples/community.yaml`](./examples/community.yaml)).
 | Channels | `create_channel`, `update_channel`, `reorder_channels`, `set_channel_permissions`, `configure_channel_access` | write |
 | Roles | `create_role`, `update_role`, `reorder_roles`, `assign_roles` | write |
 | Server & content | `update_guild_settings`, `post_message`, `edit_message`, `configure_welcome`, `manage_self_roles`, `upsert_role_panel`, `upsert_automod_rule` | write |
-| Deletion | `delete_channel`, `delete_role`, `delete_message`, `delete_role_panel`, `delete_automod_rule` | destructive |
+| Server setup | `get_server_setup`, `list_expressions`, `list_scheduled_events`, `list_invites`, `list_webhooks`, `list_templates`, `list_integrations` | read |
+| | `configure_onboarding`, `configure_welcome_screen`, `configure_widget`, `set_security_actions`, `update_bot_profile`, `upsert_emoji`, `upsert_sticker`, `upsert_soundboard_sound`, `upsert_scheduled_event`, `create_invite`, `upsert_webhook`, `upsert_template` | write |
+| Deletion | `delete_channel`, `delete_role`, `delete_message`, `delete_role_panel`, `delete_automod_rule`, `delete_expression`, `delete_scheduled_event`, `delete_invite`, `delete_webhook`, `delete_template`, `delete_integration` | destructive |
 
 Lists are paginated and filterable; plans and results come back as compact
 one-line-per-step summaries unless you ask for `detail: "full"`. Text read from
 Discord (topics, message content, descriptions) is returned wrapped as
 `untrusted_text`, and the server instructions tell the agent not to follow it.
+
+**What the server-setup tools cover.** Everything in Server Settings that
+Discord's bot API can change:
+- Server images: icon, banner, invite background and Discovery background.
+  Each needs its boost unlock, and `get_server_setup` lists which are unlocked.
+- Onboarding questions and default channels, the welcome screen, and the
+  server widget.
+- Pausing invites and DMs for up to 24 hours, and turning raid alerts off.
+- Emoji, stickers and soundboard sounds.
+- Scheduled events, including repeating ones.
+- Invites, including invites that hand out roles.
+- Webhooks, the server template, and removing other apps' integrations.
+- The bot's own nickname, avatar, banner and bio in this server.
+- Role gradients, holographic colours and role icons.
+- Voice region and video quality.
+- Forum and media tags, the default reaction, sort order, layout and
+  required tags.
+
+Images and sounds are passed as an `https` URL or a `data:` URI. steward
+checks their actual type and size before uploading.
 
 ## Configuration
 
@@ -275,6 +297,13 @@ those steps with the reason.
 | Channels and categories | Manage Channels |
 | Roles, overwrites, role panels, join roles | Manage Roles, plus every permission it should be able to grant: Discord only lets a bot allow or deny permissions it holds |
 | Server settings, AutoMod | Manage Server |
+| Onboarding | Manage Server and Manage Roles, with Community on |
+| Welcome screen, widget, security actions, templates, integrations, listing and revoking invites | Manage Server |
+| Emoji, stickers, soundboard sounds | Manage Expressions (Create Expressions covers the ones steward made) |
+| Scheduled events | Manage Events (Create Events covers the ones steward made), plus Connect in a voice channel or Manage Channels, Mute Members and Move Members in a stage |
+| Creating invites | Create Invite in that channel; Manage Roles to attach roles |
+| Webhooks | Manage Webhooks |
+| The bot's nickname in the server | Change Nickname |
 | Turning Community on or off (`settings.community`, `update_guild_settings`) | Administrator: Discord requires it for that one change |
 | Posting rules, welcome and panel messages | View Channel, Send Messages, Embed Links in that channel |
 | Recovering cleanly from timeouts | View Audit Log (falls back to a weaker name/time match without it) |
@@ -327,6 +356,17 @@ dashboard or commands. [docs/BOTS.md](./docs/BOTS.md) has the agent workflow.
   state.
 - **Read other people's message text** without the Message Content intent,
   which steward does not request. Its own messages are always readable.
+- **Change the settings Discord keeps from bots.** Someone has to do these in
+  the Discord client:
+  - the vanity URL
+  - the server's two-factor requirement for moderators
+  - Discovery
+  - the Server Guide
+  - member applications (rules screening)
+  - server subscriptions
+  - the server tag
+  - ownership transfer
+  - other apps' slash-command permissions
 
 ## How it works
 

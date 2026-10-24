@@ -22,6 +22,11 @@ export const INVITE_PRESETS: Record<string, bigint> = {
     P.ManageRoles,
     P.ManageChannels,
     P.ManageGuild,
+    P.ManageWebhooks,
+    P.ManageGuildExpressions,
+    P.ManageEvents,
+    P.CreateInstantInvite,
+    P.ChangeNickname,
     // Held so the bot can grant them in channel overwrites, which Discord only
     // allows for permissions the bot itself holds.
     P.ManageMessages,

@@ -8,12 +8,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 First version. Not yet released or published as an image.
 
 ### Added
+- Server-setup tools covering what Discord's bot API can change in Server
+  Settings:
+  - Onboarding: `configure_onboarding` checks the Community requirement, the
+    7-channel minimum, and that roles are safe to self-assign. It keeps
+    question ids so members' answers survive edits.
+  - `configure_welcome_screen`, `configure_widget`, and
+    `set_security_actions` (pause invites or DMs).
+  - `update_bot_profile` for the bot's nickname, avatar, banner and bio in
+    this server.
+  - Emoji, stickers and soundboard sounds.
+  - Scheduled events, including repeating ones.
+  - Invites, including invites that hand out roles.
+  - Webhooks (tokens are never returned), the server template, and other
+    apps' integrations.
+  - `get_server_setup` reads all of it back in one call.
+- `update_guild_settings` now sets the server icon, banner, invite background
+  and Discovery background, and can pause invites or turn raid alerts off.
+- `update_role` now sets gradient and holographic colours and role icons.
+- `update_channel` now sets voice region and video quality, the default thread
+  slowmode and archive time, and forum tags, default reaction, sort order,
+  layout and required tags. `get_channel` reports them.
+- Images and sounds are checked by their actual bytes, type and size before
+  upload. Boost unlocks are checked before the request goes out.
 - `check_bot_setup`: read-only checks for another bot's membership, required
   server/channel permissions and assignable roles, with hierarchy blockers,
   explicit unverified channels and a documented agent setup workflow.
 - One container running a discord.js bot and an MCP server over authenticated
   Streamable HTTP at `/mcp`, with `/healthz` and `/readyz`.
-- 46 typed MCP tools to inspect servers, channels, roles, members, permission
+- 71 typed MCP tools to inspect servers, channels, roles, members, permission
   overwrites and AutoMod; to create, edit, order and delete channels,
   categories and roles; to assign roles; to set overwrites and private/read-only
   presets; to update server settings; to post and edit bot-owned messages; and

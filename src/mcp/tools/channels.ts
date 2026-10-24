@@ -8,7 +8,7 @@ import {
   permissionsFromNames,
   ungrantableInChannel,
 } from '../../discord/permissions.js';
-import type { ChannelInfo, ChannelWriteBody, GuildSnapshot } from '../../discord/types.js';
+import type { ChannelInfo, ChannelKind, ChannelWriteBody, GuildSnapshot } from '../../discord/types.js';
 import { CHANNEL_TYPE_NUMBERS } from '../../discord/types.js';
 import { expandAccess } from '../../features/access.js';
 import { channelKindNeedsCommunity } from '../../features/community.js';
@@ -19,6 +19,8 @@ import { KEY_RE } from '../../blueprint/schema.js';
 import { defineTool } from '../registry.js';
 import type { CallContext } from '../registry.js';
 import {
+  emojiInput,
+  emojiResolver,
   guildIdInput,
   idOf,
   mutate,
@@ -164,6 +166,24 @@ function withBotAccess(
 
 const kinds = ['text', 'voice', 'category', 'announcement', 'stage', 'forum', 'media'] as const;
 
+/** Channel flags update_channel can toggle. */
+const REQUIRE_TAG = 16;
+const HIDE_MEDIA_DOWNLOAD_OPTIONS = 32768;
+
+/** Which channel kinds take each type-specific setting. */
+const SETTING_KINDS: Record<string, ChannelKind[]> = {
+  rtc_region: ['voice', 'stage'],
+  video_quality: ['voice', 'stage'],
+  default_auto_archive_minutes: ['text', 'announcement', 'forum', 'media'],
+  default_thread_slowmode_seconds: ['text', 'forum', 'media'],
+  forum_tags: ['forum', 'media'],
+  default_reaction_emoji: ['forum', 'media'],
+  default_sort_order: ['forum', 'media'],
+  require_tag: ['forum', 'media'],
+  default_forum_layout: ['forum'],
+  hide_media_download_options: ['media'],
+};
+
 export const channelTools = [
   defineTool({
     name: 'create_channel',
@@ -271,7 +291,7 @@ export const channelTools = [
     name: 'update_channel',
     title: 'Update channel',
     description:
-      'Rename, retopic, move between categories (parent_id null moves it out), or change slowmode, NSFW, bitrate or user limit.',
+      'Rename, retopic, move between categories (parent_id null moves it out), or change slowmode, NSFW, bitrate or user limit. Voice and stage channels also take region and video quality; text, announcement, forum and media channels take thread defaults; forum and media channels take tags, the default reaction, sort order and whether posts need a tag.',
     scope: 'write',
     input: z.object({
       guild_id: guildIdInput,
@@ -287,6 +307,35 @@ export const channelTools = [
         .boolean()
         .optional()
         .describe("After moving, copy the new category's overwrites."),
+      rtc_region: z
+        .string()
+        .regex(/^[a-z0-9-]{2,32}$/)
+        .nullable()
+        .optional()
+        .describe('Voice region id such as rotterdam or us-east; null picks automatically.'),
+      video_quality: z.enum(['auto', 'full']).optional().describe('full is 720p.'),
+      default_auto_archive_minutes: z
+        .union([z.literal(60), z.literal(1440), z.literal(4320), z.literal(10080)])
+        .optional()
+        .describe('When new threads hide after inactivity.'),
+      default_thread_slowmode_seconds: z.number().int().min(0).max(21600).optional(),
+      forum_tags: z
+        .array(
+          z.object({
+            id: snowflake.optional().describe('Keep an existing tag; leave out for a new one.'),
+            name: z.string().min(1).max(20),
+            moderated: z.boolean().default(false).describe('Only members with Manage Threads can apply it.'),
+            emoji: emojiInput.optional(),
+          }),
+        )
+        .max(20)
+        .optional()
+        .describe('The complete tag list; tags left out are removed.'),
+      default_reaction_emoji: emojiInput.nullable().optional(),
+      default_sort_order: z.enum(['latest_activity', 'creation_date']).optional(),
+      default_forum_layout: z.enum(['list', 'gallery']).optional(),
+      require_tag: z.boolean().optional().describe('New posts must pick at least one tag.'),
+      hide_media_download_options: z.boolean().optional(),
       reason: reasonInput,
     }),
     guildOf: (a) => a.guild_id,
@@ -304,6 +353,65 @@ export const channelTools = [
       if (a.slowmode_seconds !== undefined) body.rate_limit_per_user = a.slowmode_seconds;
       if (a.bitrate !== undefined) body.bitrate = a.bitrate;
       if (a.user_limit !== undefined) body.user_limit = a.user_limit;
+      for (const [field, kinds] of Object.entries(SETTING_KINDS))
+        if (a[field as keyof typeof a] !== undefined && !kinds.includes(ch.kind))
+          throw new StewardError(
+            'invalid_argument',
+            `${field} applies to ${kinds.join(' and ')} channels, not ${ch.kind}`,
+          );
+      if (a.rtc_region !== undefined) body.rtc_region = a.rtc_region;
+      if (a.video_quality !== undefined) body.video_quality_mode = a.video_quality === 'full' ? 2 : 1;
+      if (a.default_auto_archive_minutes !== undefined)
+        body.default_auto_archive_duration = a.default_auto_archive_minutes;
+      if (a.default_thread_slowmode_seconds !== undefined)
+        body.default_thread_rate_limit_per_user = a.default_thread_slowmode_seconds;
+      if (a.forum_tags || a.default_reaction_emoji) {
+        const emoji = await emojiResolver(call, a.guild_id, [
+          ...(a.forum_tags ?? []).map((t) => t.emoji),
+          a.default_reaction_emoji,
+        ]);
+        if (a.forum_tags) {
+          const known = new Set((ch.extra?.availableTags ?? []).map((t) => t.id));
+          const names = new Set<string>();
+          body.available_tags = a.forum_tags.map((t) => {
+            if (t.id && !known.has(t.id))
+              throw new StewardError(
+                'invalid_argument',
+                `tag ${t.id} is not on #${ch.name}; leave id out for a new tag`,
+              );
+            if (names.has(t.name.toLowerCase()))
+              throw new StewardError('invalid_argument', `two tags are named "${t.name}"`);
+            names.add(t.name.toLowerCase());
+            const e = t.emoji ? emoji(t.emoji) : null;
+            return {
+              ...(t.id ? { id: t.id } : {}),
+              name: t.name,
+              moderated: t.moderated,
+              emoji_id: e?.id ?? null,
+              emoji_name: e && !e.id ? e.name : null,
+            };
+          });
+        }
+        if (a.default_reaction_emoji) {
+          const e = emoji(a.default_reaction_emoji);
+          body.default_reaction_emoji = { emoji_id: e.id, emoji_name: e.id ? null : e.name };
+        }
+      }
+      if (a.default_reaction_emoji === null) body.default_reaction_emoji = null;
+      if (a.default_sort_order !== undefined)
+        body.default_sort_order = a.default_sort_order === 'creation_date' ? 1 : 0;
+      if (a.default_forum_layout !== undefined)
+        body.default_forum_layout = a.default_forum_layout === 'gallery' ? 2 : 1;
+      if (a.require_tag !== undefined || a.hide_media_download_options !== undefined) {
+        let flags = ch.extra?.flags ?? 0;
+        const set = (bit: number, on: boolean | undefined) => {
+          if (on === true) flags |= bit;
+          if (on === false) flags &= ~bit;
+        };
+        set(REQUIRE_TAG, a.require_tag);
+        set(HIDE_MEDIA_DOWNLOAD_OPTIONS, a.hide_media_download_options);
+        body.flags = flags;
+      }
       if (a.parent_id !== undefined) {
         if (ch.kind === 'category')
           throw new StewardError('invalid_argument', 'categories cannot have a parent');

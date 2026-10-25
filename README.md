@@ -97,9 +97,8 @@ MCP_ALLOWED_HOSTS=localhost,127.0.0.1,192.168.1.20,steward.lan
 The [Publish image](./.github/workflows/publish.yml) workflow pushes
 multi-arch images (`linux/amd64`, `linux/arm64`) to
 `ghcr.io/bbareth/steward` once it has run: `edge` from every push to `main`,
-`X.Y.Z` and `X.Y` from release tags, and `latest` for the newest release only
-(there is none until the first release tag). Until then — or if you prefer —
-build from source as above. `docker compose up -d` uses the image already on
+`X.Y.Z` and `X.Y` from release tags, and `latest` for the newest release only.
+You can also build from source as above. `docker compose up -d` uses the image already on
 the host and only pulls (or builds) when there is none; to move to a newer
 published image run `docker compose pull` first. Restarting the container
 never fetches anything. [Updating](./docs/SETUP.md#updating) has the details.

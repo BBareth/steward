@@ -5,7 +5,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-First version. Not yet released or published as an image.
+## [0.1.0] - 2026-10-25
+
+First release, published as `ghcr.io/bbareth/steward:0.1.0`.
 
 ### Added
 - Server-setup tools covering what Discord's bot API can change in Server
@@ -134,3 +136,6 @@ First version. Not yet released or published as an image.
   each change, which image tags exist (`edge`, `X.Y.Z`, `X.Y`, `latest` for
   the newest release only), and how to update a deployment that is a plain
   copy of the source.
+
+[Unreleased]: https://github.com/BBareth/steward/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/BBareth/steward/releases/tag/v0.1.0

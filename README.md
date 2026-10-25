@@ -219,7 +219,9 @@ Discord's bot API can change:
 - Emoji, stickers and soundboard sounds.
 - Scheduled events, including repeating ones.
 - Invites, including invites that hand out roles.
-- Webhooks, the server template, and removing other apps' integrations.
+- Webhooks, the server template, and removing integrations such as Twitch or
+  YouTube. Discord does not let a bot remove another app's bot; do that in
+  Server Settings > Integrations.
 - The bot's own nickname, avatar, banner and bio in this server.
 - Role gradients, holographic colours and role icons.
 - Voice region and video quality.

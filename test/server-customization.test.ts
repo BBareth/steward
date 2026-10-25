@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { P } from '../src/discord/permissions.js';
+import type { ChannelWriteBody } from '../src/discord/types.js';
 import { recurrenceFor } from '../src/mcp/tools/events.js';
 import { MemoryDiscordAdapter } from './helpers/memory-adapter.js';
 import type { Running } from './helpers/server.js';
@@ -564,13 +565,22 @@ describe('invites, webhooks, templates and integrations', () => {
       confirm_name: 'steward',
     });
     expect(own.data.error.message).toMatch(/its own integration/);
-    const del = await call(client, 'delete_integration', {
+    const bot = await call<Err>(client, 'delete_integration', {
       guild_id,
       integration_id: other.id,
       confirm_name: 'Carl-bot',
     });
+    expect(bot.data.error.code).toBe('precondition_failed');
+    expect(bot.data.error.message).toMatch(/Server Settings > Integrations/);
+    expect(d.integrations.has(other.id)).toBe(true);
+    const twitch = d.addIntegration({ name: 'bromine_live', type: 'twitch' });
+    const del = await call(client, 'delete_integration', {
+      guild_id,
+      integration_id: twitch.id,
+      confirm_name: 'bromine_live',
+    });
     expect(del.isError).toBe(false);
-    expect(d.integrations.has(other.id)).toBe(false);
+    expect(d.integrations.has(twitch.id)).toBe(false);
   });
 });
 
@@ -674,6 +684,14 @@ describe('server, role and channel customisation', () => {
       require_tag: true,
     });
     expect(r.isError).toBe(false);
+    // Discord checks require_tag against the tags already on the channel, so
+    // the new tags go out first and the flag in a second request.
+    const edits = d.calls.filter((c) => c.method === 'editChannel').map((c) => c.args[1] as ChannelWriteBody);
+    expect(edits).toHaveLength(2);
+    expect(edits[0]!.available_tags).toHaveLength(2);
+    expect(edits[0]!.flags).toBeUndefined();
+    expect(edits[1]).toEqual({ flags: 16 });
+    expect((r.data as { op_ids: string[] }).op_ids).toHaveLength(2);
     const extra = d.channels.get(forum.id)!.extra!;
     expect(extra.availableTags).toHaveLength(2);
     expect(extra.availableTags![0]).toMatchObject({ name: 'Bug', emojiName: '🐛', moderated: false });
@@ -706,6 +724,14 @@ describe('server, role and channel customisation', () => {
       { id: bug.id, name: 'Bugs', moderated: false, emojiId: null, emojiName: null },
     ]);
     expect(d.channels.get(forum.id)!.extra!.flags! & 16).toBe(0);
+
+    const staffOnly = await call<Err>(client, 'update_channel', {
+      guild_id,
+      channel_id: forum.id,
+      forum_tags: [{ name: 'Fixed', moderated: true }],
+      require_tag: true,
+    });
+    expect(staffOnly.data.error.message).toMatch(/members can pick/);
 
     const unknownTag = await call<Err>(client, 'update_channel', {
       guild_id,

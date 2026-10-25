@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { botChannelPermissions, botStanding, has, P } from '../../discord/permissions.js';
 import type { ChannelInfo, GuildSnapshot, WebhookWriteBody } from '../../discord/types.js';
 import { assertSelfAssignable } from '../../features/role-panels.js';
-import { StewardError } from '../../util/errors.js';
+import { OperationError } from '../../ops/journal.js';
+import { DiscordCodes, DiscordRequestError, RefusedChange, StewardError } from '../../util/errors.js';
 import { loadMedia, mediaInput } from '../../util/media.js';
 import { defineTool } from '../registry.js';
 import {
@@ -479,7 +480,7 @@ export const integrationTools = [
     name: 'delete_integration',
     title: 'Remove an integration',
     description:
-      "Remove an integration: kicks its bot and deletes its managed role, or disconnects a Twitch/YouTube account. steward cannot remove itself. confirm_name must equal the integration's name. Needs Manage Server.",
+      "Remove an integration, such as a connected Twitch or YouTube account. Discord does not let a bot remove another app's bot (Missing Access): remove those in Server Settings > Integrations instead. steward cannot remove itself. confirm_name must equal the integration's name. Needs Manage Server.",
     scope: 'destructive',
     input: z.object({
       guild_id: guildIdInput,
@@ -512,6 +513,19 @@ export const integrationTools = [
         idempotent: true,
         notFoundIsSuccess: true,
         run: (reason) => adapter.deleteIntegration(a.guild_id, i.id, reason),
+      }).catch((error: unknown) => {
+        if (
+          i.type === 'discord' &&
+          error instanceof OperationError &&
+          error.underlying instanceof DiscordRequestError &&
+          error.underlying.code === DiscordCodes.MissingAccess
+        )
+          throw new RefusedChange(
+            `Discord does not let a bot remove another app's bot. Remove ${i.name} in Server Settings > Integrations, or kick it from the member list.`,
+            undefined,
+            error.opId,
+          );
+        throw error;
       });
       return { op_id: out.opId, deleted: i.id, name: i.name };
     },

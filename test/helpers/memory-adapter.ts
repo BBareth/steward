@@ -801,6 +801,18 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
       );
     }
     this.checkOverwriteBits(body, channel);
+    // Like Discord, the require-tag flag is checked against the tags the
+    // channel has before this edit, not the ones in the same request.
+    if (body.flags !== undefined && (body.flags & 16) !== 0) {
+      if (!(channel.extra?.availableTags ?? []).some((t) => !t.moderated)) {
+        throw new DiscordRequestError(
+          'http',
+          'Discord rejected the request: Invalid Form Body (There are no tags available that can be set by non-moderators)',
+          400,
+          50035,
+        );
+      }
+    }
     this.applyChannelBody(channel, body);
     this.audit_(11, channelId, reason);
     return this.leave(mode, clone(channel));
@@ -1743,7 +1755,12 @@ export class MemoryDiscordAdapter implements DiscordAdapter {
   async deleteIntegration(guildId: string, integrationId: string, reason: string): Promise<void> {
     const mode = await this.enter('deleteIntegration', [guildId, integrationId, reason]);
     this.requireGuildPerm(P.ManageGuild, 'integrations need Manage Server');
-    if (!this.integrations.delete(integrationId)) this.unknown('Integration', 10005);
+    const integration = this.integrations.get(integrationId);
+    if (!integration) this.unknown('Integration', 10005);
+    // Discord answers Missing Access when a bot token removes another app's bot.
+    if (integration.type === 'discord' && integration.applicationId !== this.botUserId)
+      throw new DiscordRequestError('http', 'Discord rejected the request: Missing Access', 403, 50001);
+    this.integrations.delete(integrationId);
     this.audit_(82, integrationId, reason);
     return this.leave(mode, undefined);
   }

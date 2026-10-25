@@ -20,8 +20,8 @@ First version. Not yet released or published as an image.
   - Emoji, stickers and soundboard sounds.
   - Scheduled events, including repeating ones.
   - Invites, including invites that hand out roles.
-  - Webhooks (tokens are never returned), the server template, and other
-    apps' integrations.
+  - Webhooks (tokens are never returned), the server template, and
+    integrations such as Twitch or YouTube.
   - `get_server_setup` reads all of it back in one call.
 - `update_guild_settings` now sets the server icon, banner, invite background
   and Discovery background, and can pause invites or turn raid alerts off.
@@ -87,6 +87,14 @@ First version. Not yet released or published as an image.
   it could not see.
 
 ### Fixed
+- `update_channel` failed when one call set new forum tags and turned on
+  `require_tag`, because Discord checks the flag against the tags the channel
+  had before the edit. The tags and the flag now go out as two requests in the
+  right order, and `require_tag` is refused up front when no tag is one members
+  can pick.
+- `delete_integration` claimed to kick bots, but Discord answers Missing
+  Access when a bot removes another app's bot. The description now says so,
+  and that refusal comes back with how to remove the bot by hand.
 - CI dependency installation no longer waits for the optional npm audit
   endpoint; it uses the same install flags as the Docker build.
 - Role ordering with tied positions. Discord lets roles share a position and

@@ -334,7 +334,10 @@ export const channelTools = [
       default_reaction_emoji: emojiInput.nullable().optional(),
       default_sort_order: z.enum(['latest_activity', 'creation_date']).optional(),
       default_forum_layout: z.enum(['list', 'gallery']).optional(),
-      require_tag: z.boolean().optional().describe('New posts must pick at least one tag.'),
+      require_tag: z
+        .boolean()
+        .optional()
+        .describe('New posts must pick at least one tag. Needs a tag members can pick (moderated: false).'),
       hide_media_download_options: z.boolean().optional(),
       reason: reasonInput,
     }),
@@ -433,15 +436,46 @@ export const channelTools = [
         }
       }
       if (Object.keys(body).length === 0) throw new StewardError('invalid_argument', 'nothing to change');
-      const out = await mutate(call, a.guild_id, a.reason, {
-        action: 'update_channel',
-        resourceKind: 'channel',
-        targetId: ch.id,
-        summary: `update #${ch.name}: ${Object.keys(body).join(', ')}`,
-        idempotent: true,
-        run: (reason) => call.app.adapter.editChannel(ch.id, body, reason),
+      if (a.require_tag) {
+        const tags = body.available_tags ?? ch.extra?.availableTags ?? [];
+        if (!tags.some((t) => !t.moderated))
+          throw new StewardError(
+            'invalid_argument',
+            `require_tag needs at least one tag on #${ch.name} that members can pick (moderated: false)`,
+          );
+      }
+      // Discord checks the require-tag flag against the tags the channel has
+      // before the edit, so new tags and the flag go out as separate requests:
+      // tags first when the flag turns on, the flag first otherwise.
+      const { flags, ...rest } = body;
+      const requests: ChannelWriteBody[] =
+        flags === undefined || body.available_tags === undefined
+          ? [body]
+          : a.require_tag
+            ? [rest, { flags }]
+            : [{ flags }, rest];
+      const opIds = await withGuildLock(call, a.guild_id, async () => {
+        const ctx = opContext(call, a.guild_id, a.reason);
+        const ids: string[] = [];
+        for (const req of requests) {
+          const out = await runOperation(ctx, {
+            action: 'update_channel',
+            resourceKind: 'channel',
+            targetId: ch.id,
+            summary: `update #${ch.name}: ${Object.keys(req).join(', ')}`,
+            idempotent: true,
+            run: (reason) => call.app.adapter.editChannel(ch.id, req, reason),
+          });
+          ids.push(out.opId);
+        }
+        return ids;
       });
-      return { op_id: out.opId, channel_id: ch.id, changed: Object.keys(body) };
+      return {
+        op_id: opIds[opIds.length - 1],
+        ...(opIds.length > 1 ? { op_ids: opIds } : {}),
+        channel_id: ch.id,
+        changed: Object.keys(body),
+      };
     },
   }),
 

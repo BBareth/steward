@@ -27,3 +27,15 @@ export const SNOWFLAKE_RE = /^\d{17,20}$/;
 export function isSnowflake(value: unknown): value is string {
   return typeof value === 'string' && SNOWFLAKE_RE.test(value);
 }
+
+let snowflakeSeq = 0;
+
+/**
+ * A fresh snowflake for ids Discord lets the client choose, such as new
+ * onboarding prompts and options.
+ */
+export function newSnowflake(): string {
+  snowflakeSeq = (snowflakeSeq + 1) & 0xfff;
+  const worker = BigInt(randomBytes(2).readUInt16BE() & 0x3ff);
+  return (((BigInt(Date.now()) - DISCORD_EPOCH) << 22n) | (worker << 12n) | BigInt(snowflakeSeq)).toString();
+}

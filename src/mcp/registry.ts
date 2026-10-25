@@ -91,7 +91,7 @@ export function errorResult(error: unknown): ToolResult {
 }
 
 /** Tools that only add things; every other writing tool may change or remove existing state. */
-const ADDITIVE = new Set(['create_channel', 'create_role']);
+const ADDITIVE = new Set(['create_channel', 'create_role', 'create_invite']);
 /** Writing tools where repeating the same call has no further effect. */
 const IDEMPOTENT = new Set([
   'update_channel',
@@ -108,11 +108,22 @@ const IDEMPOTENT = new Set([
   'upsert_role_panel',
   'upsert_automod_rule',
   'map_resource',
+  'configure_onboarding',
+  'configure_welcome_screen',
+  'configure_widget',
+  'set_security_actions',
+  'update_bot_profile',
   'delete_channel',
   'delete_role',
   'delete_message',
   'delete_role_panel',
   'delete_automod_rule',
+  'delete_expression',
+  'delete_scheduled_event',
+  'delete_invite',
+  'delete_webhook',
+  'delete_template',
+  'delete_integration',
 ]);
 
 /**

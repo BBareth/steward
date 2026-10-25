@@ -8,9 +8,13 @@ import type { AnyToolDef } from './registry.js';
 import { blueprintTools } from './tools/blueprints.js';
 import { botTools } from './tools/bots.js';
 import { channelTools } from './tools/channels.js';
+import { eventTools } from './tools/events.js';
+import { expressionTools } from './tools/expressions.js';
 import { featureTools } from './tools/features.js';
 import { inspectTools } from './tools/inspect.js';
+import { integrationTools } from './tools/integrations.js';
 import { roleTools } from './tools/roles.js';
+import { serverSetupTools } from './tools/server-setup.js';
 import { statusTools } from './tools/status.js';
 
 export const ALL_TOOLS: AnyToolDef[] = [
@@ -21,6 +25,10 @@ export const ALL_TOOLS: AnyToolDef[] = [
   ...channelTools,
   ...roleTools,
   ...featureTools,
+  ...serverSetupTools,
+  ...expressionTools,
+  ...eventTools,
+  ...integrationTools,
 ];
 
 export const SERVER_INSTRUCTIONS = `steward administers Discord servers through the official bot API.

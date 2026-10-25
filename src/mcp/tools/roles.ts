@@ -16,9 +16,12 @@ import { colorSchema, parseColor } from '../../features/messages.js';
 import { runOperation } from '../../ops/journal.js';
 import { roleOrderPlan } from '../../ops/ordering.js';
 import { StewardError } from '../../util/errors.js';
+import { loadMedia, mediaInput } from '../../util/media.js';
 import { KEY_RE } from '../../blueprint/schema.js';
 import { defineTool } from '../registry.js';
 import {
+  emojiInput,
+  emojiResolver,
   guildIdInput,
   idOf,
   mutate,
@@ -30,6 +33,9 @@ import {
   snowflake,
   withGuildLock,
 } from './common.js';
+
+/** Discord's fixed holographic palette; it accepts no other three-colour combination. */
+const HOLOGRAPHIC = { primary_color: 11127295, secondary_color: 16759788, tertiary_color: 16761760 };
 
 export const roleTools = [
   defineTool({
@@ -152,13 +158,31 @@ export const roleTools = [
     name: 'update_role',
     title: 'Update role',
     description:
-      "Change a role's name, colour, hoist, mentionable flag or full permission set. Fails early, with the reason, if the role is at or above the bot.",
+      "Change a role's name, colour (solid, two-colour gradient or holographic), icon (an image or a unicode emoji), hoist, mentionable flag or full permission set. Icons need the ROLE_ICONS unlock and gradients ENHANCED_ROLE_COLORS (see get_server_setup). Fails early, with the reason, if the role is at or above the bot.",
     scope: 'write',
     input: z.object({
       guild_id: guildIdInput,
       role_id: snowflake,
       name: z.string().min(1).max(100).optional(),
       color: colorSchema.optional(),
+      secondary_color: colorSchema
+        .nullable()
+        .optional()
+        .describe('Second colour of a gradient with color; null makes the role a solid colour again.'),
+      holographic: z
+        .boolean()
+        .optional()
+        .describe("true uses Discord's holographic style; false returns to a solid colour."),
+      icon: mediaInput
+        .nullable()
+        .optional()
+        .describe(
+          'Role icon image (png, jpeg or webp, at most 256 KB); replaces unicode_emoji. null removes it.',
+        ),
+      unicode_emoji: emojiInput
+        .nullable()
+        .optional()
+        .describe('A unicode emoji as the role icon; replaces icon.'),
       hoist: z.boolean().optional(),
       mentionable: z.boolean().optional(),
       permissions: permissionNamesInput.optional().describe('The complete new permission set (not a delta).'),
@@ -172,8 +196,67 @@ export const roleTools = [
       if (!verdict.ok)
         throw new StewardError('precondition_failed', `cannot edit "${role.name}": ${verdict.reason}`);
       const body: RoleWriteBody = {};
+      const features = new Set(s.guild.features);
       if (a.name !== undefined) body.name = a.name;
-      if (a.color !== undefined) body.color = parseColor(a.color);
+      const hasSecondary = a.secondary_color !== undefined && a.secondary_color !== null;
+      if (a.holographic && (a.color !== undefined || hasSecondary))
+        throw new StewardError(
+          'invalid_argument',
+          'holographic uses fixed colours; leave out color and secondary_color',
+        );
+      const gradient = hasSecondary || a.holographic === true;
+      if (gradient && !features.has('ENHANCED_ROLE_COLORS'))
+        throw new StewardError(
+          'precondition_failed',
+          'gradient and holographic role colours need the ENHANCED_ROLE_COLORS unlock (boost level 2)',
+        );
+      if (a.holographic) body.colors = HOLOGRAPHIC;
+      else if (
+        a.secondary_color !== undefined ||
+        a.holographic === false ||
+        (a.color !== undefined && role.secondaryColor !== undefined)
+      ) {
+        // Changing any part of a gradient sends the whole colour set; leaving secondary_color out keeps it.
+        const keep = a.holographic === false ? null : (role.secondaryColor ?? null);
+        body.colors = {
+          primary_color: a.color !== undefined ? parseColor(a.color)! : role.color,
+          secondary_color:
+            a.secondary_color !== undefined
+              ? a.secondary_color === null
+                ? null
+                : parseColor(a.secondary_color)!
+              : keep,
+          tertiary_color: null,
+        };
+      } else if (a.color !== undefined) body.color = parseColor(a.color);
+      if (a.icon !== undefined || a.unicode_emoji !== undefined) {
+        if (a.icon && a.unicode_emoji)
+          throw new StewardError(
+            'invalid_argument',
+            'a role shows either an icon image or a unicode emoji, not both',
+          );
+        if ((a.icon || a.unicode_emoji) && !features.has('ROLE_ICONS'))
+          throw new StewardError(
+            'precondition_failed',
+            'role icons need the ROLE_ICONS unlock (boost level 2)',
+          );
+        if (a.icon !== undefined) {
+          body.icon = a.icon && (await loadMedia(a.icon, 'role_icon')).dataUri;
+          if (a.icon) body.unicode_emoji = null;
+        }
+        if (a.unicode_emoji !== undefined) {
+          if (a.unicode_emoji) {
+            const e = (await emojiResolver(call, a.guild_id, [a.unicode_emoji]))(a.unicode_emoji);
+            if (e.id)
+              throw new StewardError(
+                'invalid_argument',
+                'unicode_emoji takes a unicode emoji; upload a custom one as icon',
+              );
+            body.unicode_emoji = e.name;
+            body.icon = null;
+          } else body.unicode_emoji = null;
+        }
+      }
       if (a.hoist !== undefined) body.hoist = a.hoist;
       if (a.mentionable !== undefined) body.mentionable = a.mentionable;
       if (a.permissions) {

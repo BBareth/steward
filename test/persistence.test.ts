@@ -50,7 +50,7 @@ test('state survives a restart and migrations are idempotent', () => {
     a.close();
 
     const b = new Store(path);
-    expect(b.schemaVersion()).toBe(1);
+    expect(b.schemaVersion()).toBe(2);
     expect(b.getMapping(g, 'role', 'mod')?.discordId).toBe('111111111111111111');
     expect(b.getWelcome(g)).toMatchObject({
       enabled: true,

@@ -51,6 +51,38 @@ H='-H content-type:application/json -H accept:application/json,text/event-stream
 body=$(curl -s -X POST $H -H "authorization: Bearer $TOKEN" -d "$INIT" "http://127.0.0.1:$PORT/mcp")
 echo "$body" | grep -q '"name":"steward"' || fail "initialize did not answer: $body"
 
+# The frontend must be packaged in the image and its authenticated API must
+# work even while Discord is unavailable. Never print the session or token.
+if ! docker exec -i "$NAME" node --input-type=module <<'JS'
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+const base = 'http://127.0.0.1:8787';
+for (const path of ['/', '/assets/app.js', '/assets/style.css', '/favicon.svg']) {
+  const response = await fetch(base + path);
+  assert.equal(response.status, 200, path);
+}
+assert.equal((await fetch(base + '/api/tools')).status, 401);
+const login = await fetch(base + '/api/session', {
+  method: 'POST', headers: { authorization: `Bearer ${process.env.MCP_AUTH_TOKEN}` },
+});
+assert.equal(login.status, 200);
+const { csrf } = await login.json();
+const cookie = login.headers.get('set-cookie').split(';')[0];
+const catalog = await fetch(base + '/api/tools', { headers: { cookie } });
+assert.equal(catalog.status, 200);
+assert((await catalog.json()).tools.some((t) => t.name === 'list_guilds'));
+const status = await fetch(base + '/api/tools/steward_status', {
+  method: 'POST', headers: { cookie, 'x-steward-csrf': csrf, 'content-type': 'application/json' }, body: '{}',
+});
+assert.equal(status.status, 200);
+assert.equal((await status.json()).data.version, JSON.parse(readFileSync('package.json', 'utf8')).version);
+const foreign = await fetch(base + '/api/health', { headers: { cookie, origin: 'https://evil.example' } });
+assert.equal(foreign.status, 403);
+JS
+then
+  fail "dashboard smoke test failed"
+fi
+
 docker logs "$NAME" 2>&1 | grep -q "$TOKEN" && fail "the MCP token appeared in the logs"
 docker logs "$NAME" 2>&1 | grep -q 'not-a-real-token' && fail "the Discord token appeared in the logs"
 

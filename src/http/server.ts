@@ -5,6 +5,7 @@ import { hostHeaderValidation, originValidation, toNodeHandler } from '@modelcon
 import type { AppContext } from '../mcp/context.js';
 import { callerToAuth } from '../mcp/server.js';
 import { Authenticator } from './auth.js';
+import { createDashboard } from './dashboard.js';
 
 const MAX_BODY = 2 * 1024 * 1024;
 
@@ -44,6 +45,7 @@ export function readiness(app: AppContext): { ready: boolean; body: Record<strin
 
 export function createHttpServer(app: AppContext, mcp: McpHttpHandler): Server {
   const auth = new Authenticator(app.config.credentials);
+  const dashboard = createDashboard(app, auth, () => readiness(app).body);
   const node = toNodeHandler(mcp, {
     maxRequestBodySize: MAX_BODY,
     onerror: (error) => app.logger.warn('mcp adapter error', { error }),
@@ -99,7 +101,8 @@ export function createHttpServer(app: AppContext, mcp: McpHttpHandler): Server {
         await node(req as never, res);
         return;
       }
-      sendJson(res, 404, { error: 'not found' });
+      if (!validateHost(req, res)) return;
+      await dashboard(req, res);
     } catch (error) {
       app.logger.error('http handler failed', { error, path });
       if (!res.headersSent) sendJson(res, 500, { error: 'internal error' });

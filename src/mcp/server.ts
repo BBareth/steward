@@ -16,9 +16,11 @@ import { integrationTools } from './tools/integrations.js';
 import { roleTools } from './tools/roles.js';
 import { serverSetupTools } from './tools/server-setup.js';
 import { statusTools } from './tools/status.js';
+import { dashboardTools } from './tools/dashboard.js';
 
 export const ALL_TOOLS: AnyToolDef[] = [
   ...statusTools,
+  ...dashboardTools,
   ...inspectTools,
   ...botTools,
   ...blueprintTools,

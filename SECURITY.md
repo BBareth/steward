@@ -109,3 +109,29 @@ rather than a public issue.
 
 This is a hobby project maintained in spare time. There is no SLA, but genuine
 reports will be taken seriously.
+
+## Web dashboard
+
+The built-in dashboard uses the same credentials, scopes, guild restrictions,
+read-only policy and destructive-action policy as MCP. Credentials identify
+operators, not their Discord user accounts; give each operator a separate
+least-privilege credential. Anyone with a write credential can exercise that
+credential's Discord privileges from the dashboard.
+
+Sign-in exchanges a bearer token for a random, HttpOnly, SameSite=Strict session
+cookie that expires after eight hours or a process restart. Tokens are not
+stored in localStorage, sessionStorage, HTML, or URLs. API writes require a
+session-specific CSRF header and same-origin requests. Host validation applies
+to the dashboard, and its CSP blocks inline scripts and framing. MCP's Origin
+allowlist remains separate and unchanged. Direct TLS connections set Secure on
+the session cookie; for an HTTPS reverse proxy, configure the proxy to enforce
+HTTPS and add Secure to upstream cookies. Plain HTTP on a trusted LAN still
+exposes credentials and sessions to anyone able to intercept that network;
+use a VPN or HTTPS on untrusted networks.
+
+The AI request inbox is a guild-scoped record of requests and replies. It does
+not execute prompts, dispatch messages to chat applications, or grant an AI
+additional permissions. Prompt and reply text must be treated as untrusted
+data. Connected agents must check the human-authorized scope before acting on
+a queued request. The dashboard renders server names, descriptions, requests
+and replies as text, not HTML.

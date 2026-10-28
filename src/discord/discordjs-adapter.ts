@@ -225,7 +225,15 @@ export class DiscordJsAdapter implements DiscordAdapter {
   constructor(private readonly options: DiscordJsAdapterOptions) {}
 
   status(): ConnectionStatus {
-    return { ...this.current, guildIds: [...this.current.guildIds] };
+    return {
+      ...this.current,
+      guildIds: [...this.current.guildIds],
+      guilds: [...(this.client?.guilds.cache.values() ?? [])].map((g) => ({
+        id: g.id,
+        name: g.name ?? g.id,
+        icon_url: g.iconURL?.({ size: 64 }) ?? null,
+      })),
+    };
   }
 
   private setState(state: ConnectionState, detail: string | null = null): void {

@@ -9,6 +9,7 @@ COPY package.json package-lock.json .npmrc ./
 RUN npm ci --no-audit --no-fund
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
+COPY scripts/copy-web.mjs ./scripts/copy-web.mjs
 RUN npm run build
 
 # ---- production dependencies --------------------------------------------------

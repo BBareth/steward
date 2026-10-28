@@ -1,6 +1,6 @@
 {
   "name": "steward",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Self-hosted Discord administration bot with an authenticated MCP interface and declarative server blueprints",
   "license": "MIT",
   "private": true,

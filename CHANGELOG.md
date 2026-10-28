@@ -5,6 +5,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-28
+
+The dashboard no longer has a sign-in. If you publish the port beyond
+loopback (`STEWARD_BIND_ADDRESS`), every device that can reach it can use the
+dashboard with the bot's permissions after upgrading.
+
+### Added
+- Dashboard screenshots in the README.
+
 ### Changed
 - The web dashboard no longer asks for an MCP token. It opens directly for
   whoever can reach the port; MCP tokens are only for AI clients on `/mcp`.
@@ -163,6 +172,7 @@ First release, published as `ghcr.io/bbareth/steward:0.1.0`.
   the newest release only), and how to update a deployment that is a plain
   copy of the source.
 
-[Unreleased]: https://github.com/BBareth/steward/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/BBareth/steward/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/BBareth/steward/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/BBareth/steward/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/BBareth/steward/releases/tag/v0.1.0

@@ -60,6 +60,18 @@ structured operations and tells you exactly what happened.
 > your Discord server. Do not publish the port to the internet. See
 > [SECURITY.md](./SECURITY.md) for the trust model.
 
+## Preview
+
+The built-in [web dashboard](#web-dashboard), running against a real server:
+
+![Steward dashboard overview: gateway status, connected servers, available operations and system health](./docs/screenshots/overview.png)
+
+| Roles & permissions | Channels |
+| --- | --- |
+| ![Role inventory with hierarchy, access and blueprint keys](./docs/screenshots/roles.png) | ![Channel inventory with type, access and blueprint keys](./docs/screenshots/channels.png) |
+| **Blueprints** | **AI request inbox** |
+| ![Blueprint editor with the current server exported as YAML](./docs/screenshots/blueprints.png) | ![AI request inbox for queuing requests to a connected agent](./docs/screenshots/inbox.png) |
+
 ## Quick start
 
 On a Docker host (Docker 24+, Compose v2):

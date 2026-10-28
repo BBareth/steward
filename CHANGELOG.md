@@ -5,6 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-28
+
+### Added
+- Built-in responsive web dashboard at `/`, served by the existing container.
+- Health overview, all bot memberships, searchable role/channel inventories,
+  details, creation/editing, server-setup inspection, activity history, and
+  schema-driven forms for every permitted MCP operation.
+- Blueprint export/edit/validate/plan/apply/verify workflow with request review.
+- Guild-scoped persistent AI request inbox with MCP submission, listing and
+  replies. Requests require an agent to fetch them; no model runs automatically.
+- `list_guilds` reports joined and configured servers, respecting restricted
+  credentials and retaining the management allowlist.
+- Eight-hour HttpOnly sessions, same-origin/CSRF protection, CSP, login
+  throttling and explicit write review. Browser tokens are never persisted.
+- Shared tool executor keeps MCP/dashboard validation, policy and auditing aligned.
+
+
 ## [0.1.0] - 2026-10-25
 
 First release, published as `ghcr.io/bbareth/steward:0.1.0`.
@@ -137,5 +154,6 @@ First release, published as `ghcr.io/bbareth/steward:0.1.0`.
   the newest release only), and how to update a deployment that is a plain
   copy of the source.
 
-[Unreleased]: https://github.com/BBareth/steward/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/BBareth/steward/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/BBareth/steward/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/BBareth/steward/releases/tag/v0.1.0

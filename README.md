@@ -22,7 +22,9 @@ Connect Claude Code or Codex to steward and ask it to build or tidy a Discord
 server: categories, channels, roles, permissions, rules posts, welcome
 messages, self-role panels, AutoMod. steward does the work through Discord's
 official bot API. It holds the bot token; your agent gets its own, separate
-credential and never sees it. There is no model inside steward — it executes
+credential and never sees it. Open the built-in dashboard at `http://<host>:8787/` to inspect health, browse
+servers, and run the same operations yourself. Sign in with an MCP credential.
+There is no model inside steward — it executes
 structured operations and tells you exactly what happened.
 
 - **A whole server in one call.** Write (or export) a YAML blueprint, get a
@@ -119,6 +121,54 @@ docker run -d --name steward --init --restart unless-stopped \
 
 </details>
 
+## Web dashboard
+
+Open `http://<host>:8787/` on the same LAN or VPN as Steward. No separate
+frontend service, build tool, or port is needed. Sign in with an existing MCP
+credential; its scopes, guild restrictions, `READ_ONLY`, and
+`ALLOW_DESTRUCTIVE` apply to the dashboard too. For other operators, issue
+separate credentials with the appropriate scopes and guilds using
+`MCP_TOKENS_FILE`; there is no public signup or Discord-user login.
+
+- Health: Discord gateway, SQLite, uptime, version, and available operations.
+- Servers: every server the bot has joined, plus configured servers it has not
+  joined. A guild-restricted credential sees only its own servers. An
+  unconfigured server is visible to unrestricted credentials but cannot be edited.
+- Roles and channels: searchable, fully paginated inventories, permission and
+  hierarchy details, creation and editing, member-role assignment, and access
+  controls.
+- Server setup: settings, onboarding, welcome screen, widget, security actions,
+  expressions, events, invites, webhooks, templates, integrations and AutoMod,
+  limited by what Discord exposes and the bot can access.
+- All operations: schema-driven forms for every permitted MCP tool, with a JSON
+  editor for complex inputs. Every Discord write has a request review; deletion
+  tools retain their existing confirmation and policy requirements.
+- Blueprints: export, edit, validate, plan, review, apply and verify. Expired or
+  stale plans are rejected by the same service used by MCP.
+- Activity: the existing operation journal and tool-call history.
+
+The token is exchanged for an eight-hour HttpOnly, SameSite=Strict cookie; it
+is not stored in browser storage. Sessions expire on restart. The dashboard
+requires the same Host allowlist as MCP, enforces same-origin API requests and
+CSRF checks, and needs no `MCP_ALLOWED_ORIGINS` change. See
+[SECURITY.md](./SECURITY.md) for the LAN/VPN trust boundary.
+
+### Can I send AI prompts from the dashboard?
+
+The **AI request inbox** saves prompts in SQLite and displays agent replies.
+MCP lets an AI call tools; connecting Steward does not automatically wake a
+chat, send a message into an existing Codex conversation, or run a model.
+
+Queue a request, then use **Copy agent handoff** and paste it into your connected
+AI chat. The agent can call `list_dashboard_prompts`, inspect the server, perform
+authorized work through the normal tools, then record the verified result with
+`reply_dashboard_prompt`. Requests are guild-scoped, and returned prompt and reply
+text is marked as untrusted data. Pending requests survive container restarts.
+Automatic prompt execution needs a separately configured agent runtime, such as
+[Codex app-server](https://learn.chatgpt.com/docs/app-server), with its own
+account, authorization and approval handling. No model credentials or model
+calls are added to Steward.
+
 ## Connect an MCP client
 
 steward speaks MCP over Streamable HTTP at `http://<host>:8787/mcp` and expects
@@ -188,11 +238,13 @@ community server ([`examples/community.yaml`](./examples/community.yaml)).
 
 ## Tools
 
-71 typed tools; each credential only sees the ones its scopes allow.
+75 typed tools; each credential only sees the ones its scopes allow.
 
 | Group | Tools | Scope |
 | --- | --- | --- |
-| Status | `steward_status`, `blueprint_reference`, `generate_invite_link` | read |
+| Status | `list_guilds`, `steward_status`, `blueprint_reference`, `generate_invite_link` | read |
+| AI request inbox | `list_dashboard_prompts` | read |
+| | `submit_dashboard_prompt`, `reply_dashboard_prompt` | write |
 | Inspect | `get_guild_overview`, `list_channels`, `get_channel`, `list_roles`, `get_role`, `get_member`, `check_permissions`, `check_role_hierarchy`, `check_bot_setup`, `list_automod_rules`, `get_message`, `get_bot_features`, `list_mappings`, `list_history` | read |
 | Blueprints | `validate_blueprint`, `export_blueprint`, `plan_blueprint`, `get_plan`, `get_apply_status`, `verify_blueprint` | read |
 | | `apply_plan`, `map_resource` | write |
@@ -243,7 +295,7 @@ each one.
 | `MCP_AUTH_TOKEN_SCOPES` | `read,write,destructive` | Scopes for that token. |
 | `MCP_TOKENS_FILE` | — | JSON list of hashed credentials, each with its own scopes and guilds. |
 | `MCP_ALLOWED_HOSTS` | `localhost,127.0.0.1,[::1]` | Host names clients use. Anything else gets 403 (DNS-rebinding protection). |
-| `MCP_ALLOWED_ORIGINS` | — | Browser origins allowed. Empty refuses all browsers. |
+| `MCP_ALLOWED_ORIGINS` | — | Origins allowed for `/mcp`. The dashboard uses same-origin sessions. |
 | `DISCORD_MEMBERS_INTENT` | `false` | Request the privileged Server Members intent (welcome messages, join roles). |
 | `DISCORD_BOT_REACTION_GUARD` | `false` | Remove ordinary members' reactions from messages steward posted. Requests the non-privileged Guild Message Reactions intent; off in read-only mode. See below. |
 | `READ_ONLY` | `false` | Inspection only; no tool that changes Discord is offered. |

@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#153e35" />
+    <title>Steward · Server control</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/assets/style.css" />
+    <script src="/assets/app.js" type="module"></script>
+  </head>
+  <body>
+    <div id="login" class="login-screen">
+      <form id="login-form" class="login-card">
+        <img src="/favicon.svg" width="54" height="54" alt="" />
+        <p class="eyebrow">YOUR COMMUNITY, IN GOOD HANDS</p>
+        <h1>Welcome to Steward.</h1>
+        <p class="muted">A clear view of your Discord servers. One place to keep everything in order.</p>
+        <label for="token">MCP access token</label>
+        <input
+          id="token"
+          type="password"
+          autocomplete="off"
+          required
+          placeholder="stw_…"
+          spellcheck="false"
+        />
+        <button type="submit" class="primary">Open dashboard <span aria-hidden="true">↗</span></button>
+        <p id="login-error" role="alert" class="error"></p>
+        <p class="small muted">
+          Use your Steward MCP credential. Your token is exchanged for an eight-hour session and is never
+          saved in browser storage.
+        </p>
+        <div id="login-health" class="login-health" aria-live="polite">Checking service…</div>
+      </form>
+    </div>
+    <div id="shell" class="shell" hidden>
+      <aside class="sidebar">
+        <a class="brand" href="#overview"
+          ><img src="/favicon.svg" width="34" height="34" alt="" /><span
+            >steward<span class="brand-dot">.</span></span
+          ></a
+        >
+        <p class="nav-label">WORKSPACE</p>
+        <nav id="nav" aria-label="Main navigation">
+          <a href="#overview" data-view="overview"><span aria-hidden="true">◫</span> Overview</a>
+          <a href="#servers" data-view="servers"
+            ><span aria-hidden="true">▦</span> Servers <span id="server-count" class="nav-count">0</span></a
+          >
+          <p class="nav-label">SERVER MANAGEMENT</p>
+          <a href="#roles" data-view="roles"><span aria-hidden="true">◇</span> Roles & permissions</a>
+          <a href="#channels" data-view="channels"><span aria-hidden="true">#</span> Channels</a>
+          <a href="#settings" data-view="settings"><span aria-hidden="true">⚙</span> Server setup</a>
+          <a href="#blueprints" data-view="blueprints"><span aria-hidden="true">▤</span> Blueprints</a>
+          <a href="#operations" data-view="operations"><span aria-hidden="true">⌘</span> All operations</a>
+          <p class="nav-label">CONNECTED WORKFLOWS</p>
+          <a href="#inbox" data-view="inbox"><span aria-hidden="true">↗</span> AI request inbox</a>
+          <a href="#activity" data-view="activity"><span aria-hidden="true">◷</span> Activity</a>
+        </nav>
+        <div class="sidebar-footer">
+          <span id="connection-dot" class="dot"></span>
+          <div>
+            <strong id="connection-label">Connecting</strong><span id="version" class="small">Steward</span>
+          </div>
+          <a href="/readyz" target="_blank" rel="noreferrer" aria-label="Open readiness check">↗</a>
+        </div>
+      </aside>
+      <div class="workspace">
+        <header class="topbar">
+          <span class="muted"
+            >Workspace <span aria-hidden="true">/</span> <strong id="breadcrumb">Overview</strong></span
+          >
+          <div class="topbar-actions">
+            <span id="identity" class="small"></span><button id="refresh" class="quiet">↻ Refresh</button
+            ><button id="logout" class="quiet">Sign out</button>
+          </div>
+        </header>
+        <main id="main" tabindex="-1">
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow">STEWARD CONTROL ROOM</p>
+              <h1 id="page-title">Overview</h1>
+              <p id="page-description" class="muted"></p>
+            </div>
+            <div class="server-picker">
+              <label for="guild">CURRENT SERVER</label
+              ><select id="guild" aria-label="Current server"></select>
+            </div>
+          </div>
+          <div id="notice" role="status" aria-live="polite" hidden></div>
+          <div id="content"></div>
+          <footer class="page-footer">
+            <span>Built for communities. Run by you.</span><span id="updated">Live service data</span>
+          </footer>
+        </main>
+      </div>
+    </div>
+    <dialog id="editor-dialog" class="editor-dialog">
+      <div class="dialog-heading">
+        <div>
+          <p class="eyebrow">SERVER OPERATION</p>
+          <h2 id="editor-title">Edit</h2>
+        </div>
+        <button id="close-editor" class="quiet" aria-label="Close editor">✕</button>
+      </div>
+      <div id="editor-body"></div>
+    </dialog>
+    <dialog id="review-dialog" class="review-dialog">
+      <p class="eyebrow">REVIEW OPERATION</p>
+      <h2 id="review-title">Confirm change</h2>
+      <p id="review-description" class="muted"></p>
+      <pre id="review-args"></pre>
+      <p id="review-error" class="error" role="alert"></p>
+      <div class="actions">
+        <button id="cancel-review" class="secondary">Cancel</button
+        ><button id="confirm-review" class="primary">Confirm & apply</button>
+      </div>
+    </dialog>
+  </body>
+</html>

@@ -230,6 +230,20 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (guild_id, key)
   );
   `,
+  `
+  CREATE TABLE dashboard_prompts (
+    id TEXT PRIMARY KEY,
+    guild_id TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    reply TEXT,
+    replied_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX dashboard_prompts_by_guild ON dashboard_prompts (guild_id, created_at);
+  `,
 ];
 
 const now = () => new Date().toISOString();

@@ -616,4 +616,6 @@ export interface ConnectionStatus {
   botTag: string | null;
   applicationId: string | null;
   guildIds: string[];
+  /** Gateway inventory, including servers not enabled for management. */
+  guilds?: Array<{ id: string; name: string; icon_url: string | null }>;
 }

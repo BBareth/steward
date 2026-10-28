@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto';
  * Discord audit-log reasons (512 character limit) and message nonces (25
  * character limit), so they are kept well under both.
  */
-export function newId(prefix: 'op' | 'pln' | 'run' | 'call' | 'rp'): string {
+export function newId(prefix: 'op' | 'pln' | 'run' | 'call' | 'rp' | 'prompt'): string {
   const time = Date.now().toString(36);
   const rand = randomBytes(5).toString('hex');
   return `${prefix}_${time}${rand}`;

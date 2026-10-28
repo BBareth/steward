@@ -142,6 +142,78 @@ export function annotationsFor(def: AnyToolDef) {
   };
 }
 
+/** Shared entry point for MCP and the dashboard: validation, policy and audit stay identical. */
+export async function executeTool(
+  def: AnyToolDef,
+  args: unknown,
+  app: AppContext,
+  caller: Caller,
+): Promise<ToolResult> {
+  const started = Date.now();
+  let guildId: string | null = null;
+  let outcome: 'ok' | 'error' | 'denied' = 'ok';
+  let errorText: string | null = null;
+  try {
+    const allowed = scopeAllowed(app, caller, def.scope);
+    if (!allowed.ok) {
+      outcome = 'denied';
+      throw new StewardError(allowed.code!, allowed.message!);
+    }
+    const parsed = def.input.safeParse(args);
+    if (!parsed.success) {
+      throw new StewardError(
+        'invalid_argument',
+        parsed.error.issues
+          .map((i: { path: PropertyKey[]; message: string }) => `${i.path.join('.')}: ${i.message}`)
+          .join('; '),
+      );
+    }
+    guildId = def.guildOf?.(parsed.data) ?? null;
+    if (guildId) assertGuildFor(app, caller, guildId);
+    return okResult(
+      await def.handler(parsed.data, {
+        app,
+        caller,
+        tool: def.name,
+        assertGuild: (g) => assertGuildFor(app, caller, g),
+      }),
+    );
+  } catch (error) {
+    if (outcome === 'ok')
+      outcome =
+        error instanceof StewardError &&
+        ['forbidden', 'guild_not_allowed', 'read_only', 'destructive_disabled'].includes(error.code)
+          ? 'denied'
+          : 'error';
+    errorText = errorPayload(error).message;
+    if (!(error instanceof StewardError) && !(error instanceof Error && error.name === 'DiscordRequestError'))
+      app.logger.error('tool failed', { tool: def.name, client: caller.clientId, error });
+    return errorResult(error);
+  } finally {
+    try {
+      app.store.recordToolCall({
+        id: newId('call'),
+        clientId: caller.clientId,
+        tool: def.name,
+        guildId,
+        outcome,
+        error: errorText ? redactText(errorText).slice(0, 500) : null,
+        durationMs: Date.now() - started,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      app.logger.warn('could not record tool call', { error });
+    }
+    app.logger.info('tool call', {
+      tool: def.name,
+      client: caller.clientId,
+      guildId,
+      outcome,
+      ms: Date.now() - started,
+    });
+  }
+}
+
 export function registerTools(
   server: McpServer,
   app: AppContext,
@@ -160,65 +232,7 @@ export function registerTools(
         inputSchema: def.input,
         annotations: annotationsFor(def),
       },
-      async (args: unknown) => {
-        const started = Date.now();
-        let guildId: string | null = null;
-        let outcome: 'ok' | 'error' | 'denied' = 'ok';
-        let errorText: string | null = null;
-        try {
-          const allowed = scopeAllowed(app, caller, def.scope);
-          if (!allowed.ok) {
-            outcome = 'denied';
-            throw new StewardError(allowed.code!, allowed.message!);
-          }
-          guildId = def.guildOf?.(args) ?? null;
-          if (guildId) assertGuildFor(app, caller, guildId);
-          const data = await def.handler(args, {
-            app,
-            caller,
-            tool: def.name,
-            assertGuild: (g) => assertGuildFor(app, caller, g),
-          });
-          return okResult(data);
-        } catch (error) {
-          if (outcome === 'ok')
-            outcome =
-              error instanceof StewardError &&
-              ['forbidden', 'guild_not_allowed', 'read_only', 'destructive_disabled'].includes(error.code)
-                ? 'denied'
-                : 'error';
-          errorText = errorPayload(error).message;
-          if (
-            !(error instanceof StewardError) &&
-            !(error instanceof Error && error.name === 'DiscordRequestError')
-          ) {
-            app.logger.error('tool failed', { tool: def.name, client: caller.clientId, error });
-          }
-          return errorResult(error);
-        } finally {
-          try {
-            app.store.recordToolCall({
-              id: newId('call'),
-              clientId: caller.clientId,
-              tool: def.name,
-              guildId,
-              outcome,
-              error: errorText ? redactText(errorText).slice(0, 500) : null,
-              durationMs: Date.now() - started,
-              createdAt: new Date().toISOString(),
-            });
-          } catch (e) {
-            app.logger.warn('could not record tool call', { error: e });
-          }
-          app.logger.info('tool call', {
-            tool: def.name,
-            client: caller.clientId,
-            guildId,
-            outcome,
-            ms: Date.now() - started,
-          });
-        }
-      },
+      async (args: unknown) => executeTool(def, args, app, caller),
     );
   }
   return registered;

@@ -47,6 +47,33 @@ export const INVITE_PRESETS: Record<string, bigint> = {
 
 export const statusTools = [
   defineTool({
+    name: 'list_guilds',
+    title: 'Bot servers',
+    description:
+      'All servers the bot is in, plus configured servers it has not joined. Restricted credentials only see their own servers. Management still requires DISCORD_GUILD_IDS and credential access.',
+    scope: 'read',
+    input: z.object({}),
+    handler: async (_a, { app, caller }) => {
+      const status = app.adapter.status();
+      const ids = [...new Set([...status.guildIds, ...app.config.guildIds])];
+      return {
+        items: ids
+          .filter((id) => !caller.guilds || caller.guilds.includes(id))
+          .map((id) => {
+            const info = status.guilds?.find((g) => g.id === id);
+            return {
+              id,
+              name: info?.name ?? id,
+              icon_url: info?.icon_url ?? null,
+              bot_present: status.state === 'ready' ? status.guildIds.includes(id) : null,
+              configured: app.config.guildIds.includes(id),
+              manageable: app.config.guildIds.includes(id) && (!caller.guilds || caller.guilds.includes(id)),
+            };
+          }),
+      };
+    },
+  }),
+  defineTool({
     name: 'steward_status',
     title: 'Service status',
     description:

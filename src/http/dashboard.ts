@@ -6,11 +6,8 @@ import type { AppContext, Caller } from '../mcp/context.js';
 import { ALL_TOOLS } from '../mcp/server.js';
 import { executeTool, scopeAllowed } from '../mcp/registry.js';
 import { VERSION } from '../version.js';
-import type { Authenticator } from './auth.js';
 
-const COOKIE = 'steward_session';
 const MAX_BODY = 2 * 1024 * 1024;
-const SESSION_MS = 8 * 60 * 60_000;
 const SECURITY_HEADERS = {
   'cache-control': 'no-store',
   'x-content-type-options': 'nosniff',
@@ -41,7 +38,7 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
 function sameOrigin(req: IncomingMessage): boolean {
   if (req.headers['sec-fetch-site'] === 'cross-site') return false;
   const origin = req.headers.origin;
-  if (!origin) return true; // non-browser API clients still need authentication and CSRF
+  if (!origin) return true; // non-browser API clients still need the CSRF header
   try {
     const url = new URL(origin);
     return ['http:', 'https:'].includes(url.protocol) && url.host === req.headers.host;
@@ -50,8 +47,21 @@ function sameOrigin(req: IncomingMessage): boolean {
   }
 }
 
-export function createDashboard(app: AppContext, auth: Authenticator, health: () => unknown) {
-  const sessions = new Map<string, { caller: Caller; csrf: string; expires: number }>();
+/**
+ * The dashboard is for whoever can reach the port; it has no sign-in. It acts as
+ * an unrestricted local operator, still bound by READ_ONLY, ALLOW_DESTRUCTIVE
+ * and DISCORD_GUILD_IDS. MCP bearer tokens are for AI clients on /mcp only.
+ */
+export const DASHBOARD_CALLER: Caller = {
+  clientId: 'dashboard',
+  scopes: new Set(['read', 'write', 'destructive']),
+  guilds: null,
+};
+
+export function createDashboard(app: AppContext, health: () => unknown) {
+  // Required on every write so a page on another origin cannot drive the API.
+  const csrf = randomBytes(32).toString('hex');
+  const caller = DASHBOARD_CALLER;
   const assets = new Map<string, { type: string; body: Buffer }>();
   for (const [path, file, type] of [
     ['/', 'index.html', 'text/html; charset=utf-8'],
@@ -85,75 +95,22 @@ export function createDashboard(app: AppContext, auth: Authenticator, health: ()
       json(res, 403, { error: 'dashboard requests must be same-origin' });
       return;
     }
-    const address = req.socket.remoteAddress ?? 'unknown';
-    const secure = 'encrypted' in req.socket && req.socket.encrypted ? '; Secure' : '';
-    const cookie = (value: string, age: number) =>
-      `${COOKIE}=${value}; Path=/api; HttpOnly; SameSite=Strict; Max-Age=${age}${secure}`;
-    const now = Date.now();
-    for (const [key, session] of sessions) if (session.expires <= now) sessions.delete(key);
-    if (path === '/api/session' && req.method === 'POST') {
-      if (auth.throttled(address)) {
-        json(res, 429, { error: 'too many failed authentication attempts' }, { 'retry-after': '300' });
-        return;
-      }
-      const caller = auth.verify(req.headers.authorization);
-      if (!caller || !caller.scopes.has('read')) {
-        auth.recordFailure(address);
-        json(res, 401, { error: 'Enter a valid MCP token with read scope.' });
-        return;
-      }
-      // Bound memory and rotate any previous session rather than keeping both alive.
-      const previous = req.headers.cookie
-        ?.split(';')
-        .map((v) => v.trim())
-        .find((v) => v.startsWith(`${COOKIE}=`))
-        ?.slice(COOKIE.length + 1);
-      if (previous) sessions.delete(previous);
-      if (sessions.size >= 1000) sessions.delete(sessions.keys().next().value!);
-      const id = randomBytes(32).toString('hex');
-      const csrf = randomBytes(32).toString('hex');
-      sessions.set(id, { caller, csrf, expires: now + SESSION_MS });
-      json(
-        res,
-        200,
-        { csrf, client: caller.clientId, version: VERSION },
-        { 'set-cookie': cookie(id, SESSION_MS / 1000) },
-      );
-      return;
-    }
-    const id = req.headers.cookie
-      ?.split(';')
-      .map((v) => v.trim())
-      .find((v) => v.startsWith(`${COOKIE}=`))
-      ?.slice(COOKIE.length + 1);
-    const session = id ? sessions.get(id) : undefined;
-    if (!session) {
-      json(res, 401, { error: 'Sign in with your MCP token.' });
-      return;
-    }
     if (req.method !== 'GET') {
-      const csrf = req.headers['x-steward-csrf'];
+      const presented = req.headers['x-steward-csrf'];
       if (
-        typeof csrf !== 'string' ||
-        !/^[a-f0-9]{64}$/.test(csrf) ||
-        !timingSafeEqual(Buffer.from(csrf), Buffer.from(session.csrf))
+        typeof presented !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(presented) ||
+        !timingSafeEqual(Buffer.from(presented), Buffer.from(csrf))
       ) {
         json(res, 403, { error: 'invalid CSRF token; refresh and try again' });
         return;
       }
     }
-    if (path === '/api/session' && req.method === 'DELETE') {
-      sessions.delete(id!);
-      json(res, 200, { signed_out: true }, { 'set-cookie': cookie('', 0) });
-      return;
-    }
     if (path === '/api/session' && req.method === 'GET') {
       json(res, 200, {
-        csrf: session.csrf,
-        client: session.caller.clientId,
-        scopes: [...session.caller.scopes],
+        csrf,
+        scopes: [...caller.scopes].filter((scope) => scopeAllowed(app, caller, scope).ok),
         version: VERSION,
-        expires_at: new Date(session.expires).toISOString(),
       });
       return;
     }
@@ -162,7 +119,7 @@ export function createDashboard(app: AppContext, auth: Authenticator, health: ()
       return;
     }
     if (path === '/api/tools' && req.method === 'GET') {
-      json(res, 200, { tools: catalog.filter((t) => scopeAllowed(app, session.caller, t.scope).ok) });
+      json(res, 200, { tools: catalog.filter((t) => scopeAllowed(app, caller, t.scope).ok) });
       return;
     }
     const name = /^\/api\/tools\/([a-z_]+)$/.exec(path)?.[1];
@@ -183,7 +140,7 @@ export function createDashboard(app: AppContext, auth: Authenticator, health: ()
         json(res, 409, { error: 'Review and confirm this operation before applying it.' });
         return;
       }
-      const result = await executeTool(def, args, app, session.caller);
+      const result = await executeTool(def, args, app, caller);
       const data: unknown = JSON.parse(result.content[0]!.text);
       json(res, result.isError ? 422 : 200, { ok: !result.isError, data });
       return;

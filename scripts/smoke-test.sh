@@ -51,8 +51,8 @@ H='-H content-type:application/json -H accept:application/json,text/event-stream
 body=$(curl -s -X POST $H -H "authorization: Bearer $TOKEN" -d "$INIT" "http://127.0.0.1:$PORT/mcp")
 echo "$body" | grep -q '"name":"steward"' || fail "initialize did not answer: $body"
 
-# The frontend must be packaged in the image and its authenticated API must
-# work even while Discord is unavailable. Never print the session or token.
+# The frontend must be packaged in the image and its API must work without a
+# sign-in, even while Discord is unavailable.
 if ! docker exec -i "$NAME" node --input-type=module <<'JS'
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -61,22 +61,22 @@ for (const path of ['/', '/assets/app.js', '/assets/style.css', '/favicon.svg'])
   const response = await fetch(base + path);
   assert.equal(response.status, 200, path);
 }
-assert.equal((await fetch(base + '/api/tools')).status, 401);
-const login = await fetch(base + '/api/session', {
-  method: 'POST', headers: { authorization: `Bearer ${process.env.MCP_AUTH_TOKEN}` },
-});
-assert.equal(login.status, 200);
-const { csrf } = await login.json();
-const cookie = login.headers.get('set-cookie').split(';')[0];
-const catalog = await fetch(base + '/api/tools', { headers: { cookie } });
+const session = await fetch(base + '/api/session');
+assert.equal(session.status, 200);
+const { csrf } = await session.json();
+const catalog = await fetch(base + '/api/tools');
 assert.equal(catalog.status, 200);
 assert((await catalog.json()).tools.some((t) => t.name === 'list_guilds'));
 const status = await fetch(base + '/api/tools/steward_status', {
-  method: 'POST', headers: { cookie, 'x-steward-csrf': csrf, 'content-type': 'application/json' }, body: '{}',
+  method: 'POST', headers: { 'x-steward-csrf': csrf, 'content-type': 'application/json' }, body: '{}',
 });
 assert.equal(status.status, 200);
 assert.equal((await status.json()).data.version, JSON.parse(readFileSync('package.json', 'utf8')).version);
-const foreign = await fetch(base + '/api/health', { headers: { cookie, origin: 'https://evil.example' } });
+const noCsrf = await fetch(base + '/api/tools/steward_status', {
+  method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+});
+assert.equal(noCsrf.status, 403);
+const foreign = await fetch(base + '/api/health', { headers: { origin: 'https://evil.example' } });
 assert.equal(foreign.status, 403);
 JS
 then

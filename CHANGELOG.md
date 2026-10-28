@@ -5,6 +5,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- The web dashboard no longer asks for an MCP token. It opens directly for
+  whoever can reach the port; MCP tokens are only for AI clients on `/mcp`.
+  `READ_ONLY`, `ALLOW_DESTRUCTIVE` and `DISCORD_GUILD_IDS` still apply, and
+  same-origin, CSRF and Host checks remain.
+
+### Removed
+- Dashboard sign-in, sign-out, session cookies and login throttling.
+
 ## [0.2.0] - 2026-10-28
 
 ### Added

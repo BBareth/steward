@@ -14,7 +14,7 @@ const state = {
 };
 const pages = {
   overview: ['Overview', 'A little order. A healthier community. Here’s how things are running.'],
-  servers: ['Your servers', 'Every server Steward is in, and where your credential can make changes.'],
+  servers: ['Your servers', 'Every server Steward is in, and which of them it can manage.'],
   roles: ['Roles & permissions', 'Understand who can do what, and keep your role hierarchy in order.'],
   channels: ['Channels', 'A place for every conversation. Inspect access, settings, and structure.'],
   settings: ['Server setup', 'Your server’s settings, community features, and connected resources.'],
@@ -24,7 +24,7 @@ const pages = {
   ],
   blueprints: ['Blueprints', 'Describe your server, review a dry-run plan, then apply it.'],
   inbox: ['AI request inbox', 'Write a request for a connected agent to pick up through MCP.'],
-  activity: ['Activity', 'A record of operations, outcomes, and the credentials behind them.'],
+  activity: ['Activity', 'A record of operations, outcomes, and the clients behind them.'],
 };
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -97,18 +97,13 @@ async function api(path, options = {}) {
   if (options.method && options.method !== 'GET') headers['x-steward-csrf'] = state.csrf;
   const res = await fetch(path, { ...options, headers, credentials: 'same-origin' });
   const data = await res.json();
-  if (res.status === 401 && !options.headers?.Authorization) {
-    $('#shell').hidden = true;
-    $('#login').hidden = false;
-    state.csrf = '';
-  }
   if (!res.ok || data.ok === false)
     throw new Error(data.data?.error?.message ?? data.error ?? `Request failed (${res.status})`);
   return data;
 }
 async function call(name, args = {}, confirmed = false) {
   const def = tool(name);
-  if (!def) throw new Error('Your credential or the server mode does not allow this operation.');
+  if (!def) throw new Error('The server mode does not allow this operation.');
   const headers = { 'content-type': 'application/json' };
   if (confirmed) headers['x-steward-confirm'] = name;
   return (await api(`/api/tools/${name}`, { method: 'POST', headers, body: JSON.stringify(args) })).data;
@@ -173,10 +168,8 @@ async function bootstrap() {
   const session = await api('/api/session');
   state.csrf = session.csrf;
   state.tools = (await api('/api/tools')).tools;
-  $('#identity').textContent = `${session.client} · ${session.scopes.join(' / ')}`;
+  $('#identity').textContent = `Local access · ${session.scopes.join(' / ')}`;
   await refreshData();
-  $('#login').hidden = true;
-  $('#shell').hidden = false;
   await render();
 }
 function serverRow(guild) {
@@ -250,7 +243,7 @@ async function overviewView() {
       status.discord.bot?.tag ?? 'Waiting for bot identity',
       '◉',
     ),
-    stat('Available operations', state.tools.length, 'Based on your credential’s scopes', '⌘'),
+    stat('Available operations', state.tools.length, 'Based on the server mode', '⌘'),
     stat('Service uptime', uptime(status.uptime_seconds), `Running version ${status.version}`, '◷'),
   );
   root.append(stats);
@@ -292,11 +285,7 @@ async function overviewView() {
     ['Discord connection', status.discord.state, ready],
     ['Database', state.health.database, state.health.database === 'ok'],
     ['MCP endpoint', '/mcp · available', true],
-    [
-      'Write access',
-      status.modes.read_only ? 'Read-only mode' : scope('create_role') ? 'Enabled' : 'Read-only credential',
-      scope('create_role'),
-    ],
+    ['Write access', status.modes.read_only ? 'Read-only mode' : 'Enabled', scope('create_role')],
     ['Destructive actions', scope('delete_role') ? 'Enabled' : 'Disabled', !scope('delete_role')],
   ]) {
     const row = el('div', 'health-row', label);
@@ -779,7 +768,7 @@ function review(def, args) {
 }
 function openTool(name, args = selectedArgs()) {
   const def = tool(name);
-  if (!def) throw new Error('This operation is not available with your credential.');
+  if (!def) throw new Error('This operation is not available in the current server mode.');
   $('#editor-title').textContent = def.title;
   $('#editor-body').replaceChildren(toolForm(def, args));
   showEditor();
@@ -1042,7 +1031,7 @@ async function render() {
     else if (state.view === 'servers') {
       const servers = panel(
         'Bot membership',
-        'Servers outside DISCORD_GUILD_IDS are visible to unrestricted credentials, but cannot be managed.',
+        'Servers outside DISCORD_GUILD_IDS are listed, but cannot be managed.',
       );
       servers.body.className = '';
       for (const guild of state.guilds) servers.body.append(serverRow(guild));
@@ -1059,34 +1048,6 @@ async function render() {
       $('#content').replaceChildren(el('div', 'notice error', error.message));
   }
 }
-$('#login-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const submit = $('#login-form button');
-  submit.disabled = true;
-  $('#login-error').textContent = '';
-  try {
-    const token = $('#token').value.trim();
-    await api('/api/session', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
-    $('#token').value = '';
-    await bootstrap();
-  } catch (error) {
-    $('#login-error').textContent = error.message;
-  } finally {
-    submit.disabled = false;
-  }
-});
-$('#logout').addEventListener('click', async () => {
-  try {
-    await api('/api/session', { method: 'DELETE' });
-  } catch (e) {
-    showError(e);
-  }
-  state.csrf = '';
-  state.tools = [];
-  state.guilds = [];
-  $('#shell').hidden = true;
-  $('#login').hidden = false;
-});
 $('#guild').addEventListener('change', async () => {
   state.guild = $('#guild').value;
   state.overview = null;
@@ -1126,18 +1087,11 @@ setInterval(async () => {
     showError(error);
   }
 }, 30000);
+$('#content').replaceChildren(loading());
 try {
   await bootstrap();
-} catch {
-  $('#login').hidden = false;
-  $('#shell').hidden = true;
-}
-try {
-  const response = await fetch('/readyz');
-  const health = await response.json();
-  $('#login-health').textContent = response.ok
-    ? '●  Service online · Discord connected'
-    : `●  Service online · Discord ${health.discord.state}`;
-} catch {
-  $('#login-health').textContent = '●  Service is unreachable';
+} catch (error) {
+  $('#connection-dot').className = 'dot bad';
+  $('#connection-label').textContent = 'Steward is unreachable';
+  $('#content').replaceChildren(el('div', 'notice error', `Could not load the dashboard: ${error.message}`));
 }

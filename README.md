@@ -22,9 +22,10 @@ Connect Claude Code or Codex to steward and ask it to build or tidy a Discord
 server: categories, channels, roles, permissions, rules posts, welcome
 messages, self-role panels, AutoMod. steward does the work through Discord's
 official bot API. It holds the bot token; your agent gets its own, separate
-credential and never sees it. Open the built-in dashboard at `http://<host>:8787/` to inspect health, browse
-servers, and run the same operations yourself. Sign in with an MCP credential.
-There is no model inside steward — it executes
+credential and never sees it. Open the built-in dashboard at
+`http://<host>:8787/` to inspect health, browse servers, and run the same
+operations yourself; it has no sign-in, because the MCP token is only for the
+AI. There is no model inside steward — it executes
 structured operations and tells you exactly what happened.
 
 - **A whole server in one call.** Write (or export) a YAML blueprint, get a
@@ -48,15 +49,16 @@ structured operations and tells you exactly what happened.
   explicit allowlist. Roles with moderation or admin power — including power
   granted through channel overwrites — are refused, at configuration time and
   again on every click.
-- **Locked down by default.** Bearer-token auth with per-credential scopes and
-  guild lists, Host and Origin validation, loopback-only publishing,
+- **Locked down by default.** Bearer-token auth for MCP with per-credential
+  scopes and guild lists, Host and Origin validation, loopback-only publishing,
   destructive tools off, `@everyone` pings off, secrets redacted from logs and
   errors, and a read-only mode.
 
 > [!IMPORTANT]
-> steward is built for a **trusted LAN or VPN**. Anyone holding an MCP token
-> with write scope can reshape your Discord server. Do not publish the port to
-> the internet. See [SECURITY.md](./SECURITY.md) for the trust model.
+> steward is built to run **locally or on a trusted LAN or VPN**. Anyone who
+> can open the dashboard, or holds an MCP token with write scope, can reshape
+> your Discord server. Do not publish the port to the internet. See
+> [SECURITY.md](./SECURITY.md) for the trust model.
 
 ## Quick start
 
@@ -89,7 +91,8 @@ MCP_ALLOWED_HOSTS=localhost,127.0.0.1,192.168.1.20,steward.lan
 ```
 
 `docker compose up -d` again to apply. For Tailscale, use the host's
-`100.x.y.z` address and its MagicDNS name.
+`100.x.y.z` address and its MagicDNS name. The dashboard has no sign-in, so
+every device that can reach that address can use it.
 
 </details>
 
@@ -123,35 +126,35 @@ docker run -d --name steward --init --restart unless-stopped \
 
 ## Web dashboard
 
-Open `http://<host>:8787/` on the same LAN or VPN as Steward. No separate
-frontend service, build tool, or port is needed. Sign in with an existing MCP
-credential; its scopes, guild restrictions, `READ_ONLY`, and
-`ALLOW_DESTRUCTIVE` apply to the dashboard too. For other operators, issue
-separate credentials with the appropriate scopes and guilds using
-`MCP_TOKENS_FILE`; there is no public signup or Discord-user login.
+Open `http://<host>:8787/` in a browser on the machine running steward, or on
+your LAN or VPN if you published the port there. No separate frontend service,
+build tool, port or sign-in is needed: MCP tokens are only for AI clients on
+`/mcp`. `READ_ONLY`, `ALLOW_DESTRUCTIVE` and `DISCORD_GUILD_IDS` apply to the
+dashboard exactly as they do to MCP.
 
 - Health: Discord gateway, SQLite, uptime, version, and available operations.
 - Servers: every server the bot has joined, plus configured servers it has not
-  joined. A guild-restricted credential sees only its own servers. An
-  unconfigured server is visible to unrestricted credentials but cannot be edited.
+  joined. A server outside `DISCORD_GUILD_IDS` is listed but cannot be edited.
 - Roles and channels: searchable, fully paginated inventories, permission and
   hierarchy details, creation and editing, member-role assignment, and access
   controls.
 - Server setup: settings, onboarding, welcome screen, widget, security actions,
   expressions, events, invites, webhooks, templates, integrations and AutoMod,
   limited by what Discord exposes and the bot can access.
-- All operations: schema-driven forms for every permitted MCP tool, with a JSON
+- All operations: schema-driven forms for every MCP tool the server mode allows, with a JSON
   editor for complex inputs. Every Discord write has a request review; deletion
   tools retain their existing confirmation and policy requirements.
 - Blueprints: export, edit, validate, plan, review, apply and verify. Expired or
   stale plans are rejected by the same service used by MCP.
 - Activity: the existing operation journal and tool-call history.
 
-The token is exchanged for an eight-hour HttpOnly, SameSite=Strict cookie; it
-is not stored in browser storage. Sessions expire on restart. The dashboard
-requires the same Host allowlist as MCP, enforces same-origin API requests and
-CSRF checks, and needs no `MCP_ALLOWED_ORIGINS` change. See
-[SECURITY.md](./SECURITY.md) for the LAN/VPN trust boundary.
+Anyone who can reach the port can use the dashboard with everything the bot is
+allowed to do, so keep `STEWARD_BIND_ADDRESS` on `127.0.0.1` (the default)
+unless you trust every device on the network you publish it to. The dashboard
+requires the same Host allowlist as MCP and enforces same-origin API requests
+and CSRF checks, so other websites cannot drive it through your browser. It
+needs no `MCP_ALLOWED_ORIGINS` change. See [SECURITY.md](./SECURITY.md) for the
+trust boundary.
 
 ### Can I send AI prompts from the dashboard?
 

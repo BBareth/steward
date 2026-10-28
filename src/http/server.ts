@@ -45,7 +45,7 @@ export function readiness(app: AppContext): { ready: boolean; body: Record<strin
 
 export function createHttpServer(app: AppContext, mcp: McpHttpHandler): Server {
   const auth = new Authenticator(app.config.credentials);
-  const dashboard = createDashboard(app, auth, () => readiness(app).body);
+  const dashboard = createDashboard(app, () => readiness(app).body);
   const node = toNodeHandler(mcp, {
     maxRequestBodySize: MAX_BODY,
     onerror: (error) => app.logger.warn('mcp adapter error', { error }),

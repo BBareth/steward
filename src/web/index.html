@@ -10,31 +10,7 @@
     <script src="/assets/app.js" type="module"></script>
   </head>
   <body>
-    <div id="login" class="login-screen">
-      <form id="login-form" class="login-card">
-        <img src="/favicon.svg" width="54" height="54" alt="" />
-        <p class="eyebrow">YOUR COMMUNITY, IN GOOD HANDS</p>
-        <h1>Welcome to Steward.</h1>
-        <p class="muted">A clear view of your Discord servers. One place to keep everything in order.</p>
-        <label for="token">MCP access token</label>
-        <input
-          id="token"
-          type="password"
-          autocomplete="off"
-          required
-          placeholder="stw_…"
-          spellcheck="false"
-        />
-        <button type="submit" class="primary">Open dashboard <span aria-hidden="true">↗</span></button>
-        <p id="login-error" role="alert" class="error"></p>
-        <p class="small muted">
-          Use your Steward MCP credential. Your token is exchanged for an eight-hour session and is never
-          saved in browser storage.
-        </p>
-        <div id="login-health" class="login-health" aria-live="polite">Checking service…</div>
-      </form>
-    </div>
-    <div id="shell" class="shell" hidden>
+    <div id="shell" class="shell">
       <aside class="sidebar">
         <a class="brand" href="#overview"
           ><img src="/favicon.svg" width="34" height="34" alt="" /><span
@@ -71,8 +47,7 @@
             >Workspace <span aria-hidden="true">/</span> <strong id="breadcrumb">Overview</strong></span
           >
           <div class="topbar-actions">
-            <span id="identity" class="small"></span><button id="refresh" class="quiet">↻ Refresh</button
-            ><button id="logout" class="quiet">Sign out</button>
+            <span id="identity" class="small"></span><button id="refresh" class="quiet">↻ Refresh</button>
           </div>
         </header>
         <main id="main" tabindex="-1">

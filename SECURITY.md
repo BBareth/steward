@@ -112,22 +112,20 @@ reports will be taken seriously.
 
 ## Web dashboard
 
-The built-in dashboard uses the same credentials, scopes, guild restrictions,
-read-only policy and destructive-action policy as MCP. Credentials identify
-operators, not their Discord user accounts; give each operator a separate
-least-privilege credential. Anyone with a write credential can exercise that
-credential's Discord privileges from the dashboard.
+The built-in dashboard has no sign-in. It is meant for whoever runs steward,
+on the same machine or a trusted LAN or VPN; MCP bearer tokens are for AI
+clients on `/mcp` and are not used by the dashboard. Anyone who can reach the
+port can use the dashboard with everything the bot is allowed to do, within
+`READ_ONLY`, `ALLOW_DESTRUCTIVE` and `DISCORD_GUILD_IDS`. Its actions are
+recorded in the tool-call history under the client `dashboard`.
 
-Sign-in exchanges a bearer token for a random, HttpOnly, SameSite=Strict session
-cookie that expires after eight hours or a process restart. Tokens are not
-stored in localStorage, sessionStorage, HTML, or URLs. API writes require a
-session-specific CSRF header and same-origin requests. Host validation applies
-to the dashboard, and its CSP blocks inline scripts and framing. MCP's Origin
-allowlist remains separate and unchanged. Direct TLS connections set Secure on
-the session cookie; for an HTTPS reverse proxy, configure the proxy to enforce
-HTTPS and add Secure to upstream cookies. Plain HTTP on a trusted LAN still
-exposes credentials and sessions to anyone able to intercept that network;
-use a VPN or HTTPS on untrusted networks.
+Keep the port on loopback (the Compose default) unless every device that can
+reach the published address is trusted. Host validation applies to the
+dashboard, so DNS rebinding is refused. API requests must be same-origin, and
+writes need a per-process CSRF header that other websites cannot read, so a
+page you visit cannot drive the dashboard through your browser. The CSP blocks
+inline scripts and framing. MCP's Origin allowlist remains separate and
+unchanged.
 
 The AI request inbox is a guild-scoped record of requests and replies. It does
 not execute prompts, dispatch messages to chat applications, or grant an AI
